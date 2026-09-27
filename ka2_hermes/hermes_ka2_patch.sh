@@ -8,6 +8,9 @@
 # cascaded into: liveCalibration/livePose invalid -> selfdrived wedged in selfdriveInitializing ->
 # no ControlsReady -> panda never armed -> nothing engaged, and a permanent commIssue alert.
 #
+# The lane-centre work (decouple + bias) is re-applied the same way, through the patch scripts kept under
+# /data/hermes/patches - outside the tree, so they survive the very reset they repair.
+#
 # Idempotent: each patch is skipped when its marker is already present. Safe to run every boot.
 set -u
 python3 - <<'PY'
@@ -87,4 +90,17 @@ def planner_valid_patch(s):
 
 edit(OD + '/selfdrive/controls/lib/longitudinal_planner.py', 'check_services', planner_valid_patch)
 PY
+
+# --- lane-centre correction: the correction is decoupled from the lane's own curvature, and the driver's
+# in-lane bias is added (see ka2_hermes/README.md, references/bukapilot-byd-lateral.md). Each script aborts
+# without writing unless every one of its edits matches exactly once, so a half-applied tree is never left
+# behind; the marker check makes a re-run a no-op.
+CONTROLSD=/data/openpilot/selfdrive/controls/controlsd.py
+if [ -f "$CONTROLSD" ]; then
+  grep -q 'LANE_CORRECTION_DECOUPLE' "$CONTROLSD" \
+    || python3 /data/hermes/patches/patch_decouple.py "$CONTROLSD" || true
+  grep -q 'LANE_CORRECTION_BIAS_M' "$CONTROLSD" \
+    || python3 /data/hermes/patches/patch_bias.py "$CONTROLSD" || true
+fi
+
 exit 0
