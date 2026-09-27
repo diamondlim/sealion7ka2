@@ -1,1 +1,10 @@
-cat: /etc/systemd/system/hermes-ka2-patch.timer: No such file or directory
+[Unit]
+Description=Hermes KA2 patch (re-apply the box tree edits after an updater reset)
+
+[Timer]
+OnBootSec=90
+OnUnitActiveSec=10min
+Unit=hermes-ka2-patch.service
+
+[Install]
+WantedBy=timers.target

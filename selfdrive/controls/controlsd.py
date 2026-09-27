@@ -67,6 +67,21 @@ LANE_CORRECTION_MAX_LAT_ACC = 0.3   # m/s^2 of extra lateral acceleration the co
 LANE_CORRECTION_MIN_SPEED = 5.0     # m/s
 LANE_CORRECTION_MIN_LOOKAHEAD_M = 10.0  # floor on the lookahead at low speed
 
+# The request is a pursuit of the lane centre, so it also contains the *lane's own* curvature: for a lane
+# curving at k, y(L) ~ 0.5*k*L^2, hence 2*y(L)/L^2 ~ k regardless of the lookahead. The plan already
+# carries that curvature, so without this the correction asks for the bend roughly twice over - measured
+# on the owner's own logs, 92% of the request in gentle bends was the bend's own curvature. That is felt
+# as turning in early and then holding the line, and because the demand exceeds the budget in any real
+# bend the correction sits at its cap there. 1.0 subtracts it: y(L) - y(2L)/4 keeps the position error
+# and cancels a quadratic lane exactly, with no derivative estimate to amplify noise (a pure lateral
+# offset is then weighted 0.75x, which the gain covers). 0.0 is the plain pursuit request, for A/B.
+LANE_CORRECTION_DECOUPLE = 1.0
+
+# Where in the lane to sit, in metres, signed like the offset above: positive holds the car to the right of
+# the lane centre, negative to the left. It is added to the correction's target, so unlike the model's own
+# path skew (DrivePathOffset, read once at modeld startup) it can be trimmed while driving.
+LANE_CORRECTION_BIAS_M = 0.0
+
 # Memory and shaping for the lane geometry. Lane lines are noisy frame to frame — worse at
 # night — so the offset is low-passed rather than used raw. The first attempt used a sliding
 # median: good noise rejection, but its output is piecewise-constant — every window slide
@@ -97,6 +112,8 @@ TUNING_RELOAD_FRAMES = 100          # ~1 s at DT_CTRL = 0.01
 # (less authority, more smoothing, stricter geometry tests) or switch it off entirely, but it can
 # never make it sharper than the code committed here. Turning something *up* is a change to the
 # car's lateral behaviour, and that belongs in a commit with a drive behind it - not in a slider.
+# One key is two-sided on purpose: LANE_CORRECTION_BIAS_M says where in the lane to sit, which has no
+# "gentler" direction. It carries no extra authority - the range below and the lateral budget still clamp it.
 TUNING_LIMITS = {
   "LANE_CORRECTION_GAIN": (0.0, 1.0),                 # 0.0 = off (stock)
   "LANE_CORRECTION_LOOKAHEAD_S": (1.5, 3.0),          # further ahead = gentler
@@ -108,8 +125,11 @@ TUNING_LIMITS = {
   "LANE_CORRECTION_MAX_ACC_RATE": (0.0, 0.9),         # slower changes; 0.0 = unlimited
   "LANE_MEMORY_HOLD_S": (0.0, 0.4),                   # hold a stale offset for less time
   "LANE_MEMORY_MAX_YAW_RATE": (0.0, 0.15),            # trust the held offset in less curvature
+  "LANE_CORRECTION_DECOUPLE": (0.0, 1.0),             # 0.0 = plain pursuit, no lane-curvature cancellation
+  "LANE_CORRECTION_BIAS_M": (-0.30, 0.30),            # where to sit in the lane; two-sided by nature
 }
 TUNING_BASE = {name: globals()[name] for name in TUNING_LIMITS}
+_LANE_TUNING_LAST = None             # the tuning dict as last logged, so a change appears once in the journal
 
 
 def read_tuning(path=TUNING_PATH, limits=TUNING_LIMITS):
@@ -138,8 +158,12 @@ def read_tuning(path=TUNING_PATH, limits=TUNING_LIMITS):
   return out
 
 
-def lane_centre_offset(model_v2, v_ego):
+def lane_centre_offset(model_v2, v_ego, decouple=None):
   """Lateral offset of the lane centre from the car, from the model's current-lane lines.
+
+  With `decouple` (default: the live LANE_CORRECTION_DECOUPLE value) the lane's own curvature is removed
+  from the returned offset, so what is left is the position error rather than the bend. Callers that
+  want the raw geometry pass decouple=False.
 
   Uses only the pair that bounds the car's own lane: laneLines[1] (left) and laneLines[2]
   (right). Bracketing the car with the max/min of every probable line — the previous
@@ -156,20 +180,20 @@ def lane_centre_offset(model_v2, v_ego):
 
   lookahead = max(float(v_ego) * LANE_CORRECTION_LOOKAHEAD_S, LANE_CORRECTION_MIN_LOOKAHEAD_M)
 
-  def y_at_lookahead(line):
+  def y_at(line, x_target):
     xs = np.asarray(line.x, dtype=float)
     ys = np.asarray(line.y, dtype=float)
     if xs.size < 2 or ys.size != xs.size:
       return None
     order = np.argsort(xs)
     xs, ys = xs[order], ys[order]
-    if not (xs[0] <= lookahead <= xs[-1]):
+    if not (xs[0] <= x_target <= xs[-1]):
       return None
-    y = float(np.interp(lookahead, xs, ys))
+    y = float(np.interp(x_target, xs, ys))
     return y if math.isfinite(y) else None
 
-  y_left = y_at_lookahead(lines[1]) if probs[1] >= LANE_CORRECTION_MIN_PROB else None
-  y_right = y_at_lookahead(lines[2]) if probs[2] >= LANE_CORRECTION_MIN_PROB else None
+  y_left = y_at(lines[1], lookahead) if probs[1] >= LANE_CORRECTION_MIN_PROB else None
+  y_right = y_at(lines[2], lookahead) if probs[2] >= LANE_CORRECTION_MIN_PROB else None
   if y_left is None or y_right is None:
     return None                                  # never mix in adjacent-lane lines
   if y_left >= y_right:
@@ -178,10 +202,29 @@ def lane_centre_offset(model_v2, v_ego):
     return None                                  # implausible lane width
 
   centre_offset = 0.5 * (y_left + y_right)       # + means the lane centre is right of the car
+
+  if decouple is None:
+    decouple = bool(LANE_CORRECTION_DECOUPLE)
+  if decouple:
+    # Remove the lane's own curvature (see LANE_CORRECTION_DECOUPLE): the same pair, twice the lookahead.
+    # The lane-width test is repeated there because a line that has wandered into another lane is worthless
+    # as a curvature reference. No 2L sample (short line) -> the plain offset, i.e. the previous behaviour.
+    y2_left = y_at(lines[1], 2.0 * lookahead) if probs[1] >= LANE_CORRECTION_MIN_PROB else None
+    y2_right = y_at(lines[2], 2.0 * lookahead) if probs[2] >= LANE_CORRECTION_MIN_PROB else None
+    if y2_left is not None and y2_right is not None and 1.5 <= (y2_right - y2_left) <= 6.0:
+      centre_offset -= 0.25 * 0.5 * (y2_left + y2_right)
+
+  # The plausibility bound applies to what is left, i.e. to the position error: a bend's own geometry can
+  # push the raw offset far past any sensible bound, and rejecting those frames is what switched the
+  # correction off in exactly the corners it exists for.
   if abs(centre_offset) > LANE_CORRECTION_MAX_OFFSET_M:
     return None
 
-  return centre_offset
+  # The owner's chosen position in the lane, added after the bound so the bound keeps testing the raw
+  # geometry rather than the instruction. It costs budget in proportion to its size (~0.27 m/s^2 at the
+  # 0.30 m limit, independent of speed because the lookahead grows with speed), so a large bias leaves the
+  # correction less authority to hold the offset it is asking for.
+  return centre_offset + LANE_CORRECTION_BIAS_M
 
 
 def lane_curvature_from_offset(centre_offset, v_ego, lookahead):
@@ -342,6 +385,14 @@ class Controls:
     self.lane_centre.hold_s = tuning.get("LANE_MEMORY_HOLD_S", TUNING_BASE["LANE_MEMORY_HOLD_S"])
     self.lane_slew.max_rate = tuning.get("LANE_CORRECTION_MAX_ACC_RATE",
                                          TUNING_BASE["LANE_CORRECTION_MAX_ACC_RATE"])
+
+    # Logged on change only, never per frame: this is how a drive can later be tied to the knob values it
+    # ran with, and how a knob that never lands becomes visible instead of silent.
+    global _LANE_TUNING_LAST
+    live = {name: globals()[name] for name in TUNING_LIMITS}
+    if live != _LANE_TUNING_LAST:
+      _LANE_TUNING_LAST = live
+      cloudlog.info("lane tuning now: %s", json.dumps(live, sort_keys=True))
 
   def update(self):
     self._tuning_frame += 1

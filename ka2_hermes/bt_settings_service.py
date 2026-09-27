@@ -31,6 +31,7 @@ Two truths this file encodes, both learned from the fork's own source rather tha
    ExperimentalMode whenever the car has no openpilot longitudinal, which is this Sealion 7.
 """
 import ast
+import glob
 import json
 import math
 import os
@@ -98,6 +99,18 @@ TUNING_TITLES = {
   "LANE_MEMORY_MAX_YAW_RATE": ("Yaw-rate limit for a held offset (rad/s)",
                                "Live tuning. Above this curvature rate a remembered offset is "
                                "never trusted. Tighter only."),
+  "LANE_CORRECTION_DECOUPLE": ("Work on the lane, not on the bend (0/1)",
+                               "1 = the correction subtracts the lane's own curvature, so through a corner it "
+                               "acts on where you sit in the lane instead of on the bend itself - it stops "
+                               "turning in early and holding the line. 0 = the plain request, which counts the "
+                               "bend's curvature a second time. Applies within about a second of a change."),
+  "LANE_CORRECTION_BIAS_M": ("Where to sit in the lane (m, + = right of centre)",
+                             "Position to hold the car at within its lane, in metres, added to the "
+                             "lane-centring correction's target. Positive sits to the right of the lane "
+                             "centre, negative to the left. Unlike the Path Skew Offset in Device Settings "
+                             "this is read continuously, so it can be trimmed while driving, and the two add "
+                             "up. The bias is spent from the correction's lateral budget, so a large one "
+                             "leaves it less authority to hold the position."),
   # --- the vision -> stock-ACC bridge. These are read by the bridge tool, not by controlsd; it re-reads
   #     the same tuning file about once a second.
   "VIS_TURN_ACC_MIN_SETPOINT_KMH": ("Auto-slow floor (km/h)",
@@ -182,6 +195,8 @@ TUNING_STEPS = {
   "LANE_CORRECTION_MAX_ACC_RATE": 0.1,
   "LANE_MEMORY_HOLD_S": 0.05,
   "LANE_MEMORY_MAX_YAW_RATE": 0.025,
+  "LANE_CORRECTION_DECOUPLE": 1.0,          # 0/1 toggle
+  "LANE_CORRECTION_BIAS_M": 0.05,           # metres
   "VIS_TURN_ACC_MIN_SETPOINT_KMH": 5.0,     # one press of the app's + moves the floor a whole ACC step
   "VIS_TURN_ACC_MAX_RESTORE_KMH": 5.0,
   "VIS_TURN_ACC_MAX_STEPS": 1.0,            # one step at a time: 3 -> 4 -> 5 -> 6
@@ -229,6 +244,25 @@ TUNING_SOURCES = (
 _TUNING_CACHE = {"at": 0.0, "limits": {}, "bases": {}, "supported": set()}
 
 
+def _literal_number(node, consts=None):
+  """A numeric literal as a float, whatever shape `ast` gave it.
+
+  Handles a plain constant, a negated one (-0.30 parses as UnaryOp(USub, Constant)), and a bare name that
+  refers to a module-level constant. Returns None when the node is not a number, so callers skip the key
+  rather than raising: introspection on a car must never take the app down.
+  """
+  if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)) and not isinstance(node.value, bool):
+    return float(node.value)
+  if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
+    inner = _literal_number(node.operand, consts)
+    if inner is None:
+      return None
+    return -inner if isinstance(node.op, ast.USub) else inner
+  if isinstance(node, ast.Name) and consts is not None:
+    return consts.get(node.id)
+  return None
+
+
 def tuning_info(max_age_s=10.0):
   """Every live knob the box's own code reads, gathered from each source file's TUNING_LIMITS.
 
@@ -249,21 +283,30 @@ def tuning_info(max_age_s=10.0):
     except Exception as exc:                        # a missing or unparseable source is not fatal
       log("tuning introspection failed for %s: %s" % (source["path"], exc))
       continue
+    consts = {}
+    for node in tree.body:
+      if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+        value = _literal_number(node.value)
+        if value is not None:
+          consts[node.targets[0].id] = value
     found = False
     for node in tree.body:
       if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
         name = node.targets[0].id
         for key, const in source["keys"].items():
-          if name == const and isinstance(node.value, ast.Constant):
-            bases[key] = float(node.value.value)
+          if name == const:
+            base = _literal_number(node.value, consts)
+            if base is None:
+              continue
+            bases[key] = base
             found = True
         if name == "TUNING_LIMITS" and isinstance(node.value, ast.Dict):
           for key, value in zip(node.value.keys, node.value.values):
             if isinstance(key, ast.Constant) and isinstance(value, ast.Tuple) and len(value.elts) == 2:
-              try:
-                limits[key.value] = (float(value.elts[0].value), float(value.elts[1].value))
-              except (TypeError, ValueError):
+              low, high = (_literal_number(elt, consts) for elt in value.elts)
+              if low is None or high is None:
                 continue
+              limits[key.value] = (low, high)
               found = True
     if reads_file and found:
       supported |= set(source["keys"])
@@ -312,6 +355,30 @@ def write_tuning_value(name, value):
     os.close(dot)
 
 
+# Reading order for the lane-centring card: the rows that decide how the car behaves in a bend first,
+# then the shaping and gate rows. Anything else stays alphabetical, as before.
+LANE_CARD_ORDER = (
+  "LANE_CORRECTION_DECOUPLE",       # lane or bend: the one that changed the corner behaviour
+  "LANE_CORRECTION_BIAS_M",         # where in the lane to sit
+  "LANE_CORRECTION_GAIN",
+  "LANE_CORRECTION_LOOKAHEAD_S",
+  "LANE_CORRECTION_MAX_LAT_ACC",
+  "LANE_CORRECTION_MAX_OFFSET_M",
+  "LANE_CORRECTION_FILTER_TAU_S",
+  "LANE_CORRECTION_MAX_ACC_RATE",
+  "LANE_CORRECTION_MIN_PROB",
+  "LANE_CORRECTION_MIN_SPEED",
+  "LANE_MEMORY_HOLD_S",
+  "LANE_MEMORY_MAX_YAW_RATE",
+)
+
+
+def row_order(name):
+  if name in LANE_CARD_ORDER:
+    return (0, LANE_CARD_ORDER.index(name), name)
+  return (1, 0, name)
+
+
 def tuning_rows():
   """One key entry per live-tunable knob, or [] when the deployed build does not read the file."""
   info = controlsd_tuning()
@@ -319,7 +386,7 @@ def tuning_rows():
     return []
   entries = []
   overrides = read_tuning_file()
-  for name in sorted(info["limits"]):
+  for name in sorted(info["limits"], key=row_order):
     low, high = info["limits"][name]
     base = info["bases"].get(name)
     shown = overrides.get(name, base)
@@ -380,6 +447,20 @@ KEYS = [
    "desc": "Set from the car the device has fingerprinted."},
   {"k": "FeaturesPackage", "type": "str", "mode": "ro", "sec": "dev", "title": "Features Package",
    "desc": "Feature bundle applied by the vendor app."},
+  {"k": "TempSoc", "type": "str", "mode": "ro", "sec": "dev", "src": "thermal",
+   "title": "CPU temperature (SoC)",
+   "desc": "Read live from the box's thermal zones every time this screen is read. The SoC begins "
+           "throttling at its first trip point (75 C), after which every daemon runs late."},
+  {"k": "TempCores", "type": "str", "mode": "ro", "sec": "dev", "src": "thermal",
+   "title": "CPU cores (big / big / little)",
+   "desc": "The three CPU cluster temperatures."},
+  {"k": "TempGpuNpu", "type": "str", "mode": "ro", "sec": "dev", "src": "thermal",
+   "title": "GPU / NPU",
+   "desc": "Graphics and neural-processor temperatures. The model runs on the NPU, so this is the "
+           "one that matters while driving."},
+  {"k": "TempThermal", "type": "str", "mode": "ro", "sec": "dev", "src": "thermal",
+   "title": "Thermal state",
+   "desc": "Headroom to the first trip point, or a warning when the box is throttling right now."},
   {"k": "GithubUsername", "type": "str", "mode": "ro", "sec": "dev", "title": "SSH Keys",
    "desc": "The GitHub account whose public keys are trusted for SSH. Changing it regenerates "
            "that key list and would drop any key added by hand."},
@@ -516,8 +597,65 @@ def typed_ok(entry, raw):
   return True
 
 
+THERMAL_ROOT = os.environ.get("KA2_THERMAL_ROOT", "/sys/class/thermal")
+THERMAL_FAN = os.environ.get("KA2_THERMAL_FAN", "/sys/class/thermal")
+
+
+def thermal_read():
+  """(degrees C by zone type, first trip point in C, throttling now). Read live, every call.
+
+  Nothing is cached: the phone re-reads this screen on demand and a stale temperature would be worse
+  than no temperature. The cooling-device states are the authoritative "is it throttling" signal.
+  """
+  temps, trip, throttled = {}, None, False
+  for d in sorted(glob.glob(THERMAL_ROOT + "/thermal_zone*")):
+    try:
+      with open(d + "/type") as fh:
+        zone = fh.read().strip()
+      with open(d + "/temp") as fh:
+        temps[zone] = float(fh.read().strip()) / 1000.0
+      if zone == "soc-thermal":
+        with open(d + "/trip_point_0_temp") as fh:
+          trip = float(fh.read().strip()) / 1000.0
+    except Exception:
+      continue
+  for d in sorted(glob.glob(THERMAL_ROOT + "/cooling_device*")):
+    try:
+      with open(d + "/cur_state") as fh:
+        if int(fh.read().strip()) > 0:
+          throttled = True
+    except Exception:
+      continue
+  return temps, trip, throttled
+
+
+def thermal_value(key):
+  """One read-only temperature line for the device section."""
+  temps, trip, throttled = thermal_read()
+
+  def fmt(*zones):
+    vals = [temps[z] for z in zones if z in temps]
+    return " / ".join("%.1f C" % v for v in vals) if vals else "n/a"
+
+  if key == "TempSoc":
+    return fmt("soc-thermal")
+  if key == "TempCores":
+    return fmt("bigcore0-thermal", "bigcore1-thermal", "littlecore-thermal")
+  if key == "TempGpuNpu":
+    return fmt("gpu-thermal", "npu-thermal")
+  if key == "TempThermal":
+    if throttled:
+      return "throttling now - the box is slow while it cools"
+    if trip is not None and "soc-thermal" in temps:
+      return "ok, %.1f C below the %.0f C trip point" % (trip - temps["soc-thermal"], trip)
+    return "ok"
+  return "n/a"
+
+
 def effective(entry):
   """(value the box will actually use, stored-but-unreadable text or None)."""
+  if entry.get("src") == "thermal":
+    return thermal_value(entry["k"]), None
   if entry.get("src") == "json":
     overrides = read_tuning_file()
     name = entry["k"]

@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# Hermes: keep openpilot usable on this KA2 across the boot-time tree reset
+# (the updater runs `git reset --hard FETCH_HEAD`, which wipes local edits).
+#
+# Two failure modes are fixed here, both consequences of carState (a 100 Hz message) being read
+# non-blockingly inside a SubMaster that polls a different service: the reader sees ~2 Hz, so the
+# alive/average-frequency checks fail and the message's `valid` flag is consumed as False. That
+# cascaded into: liveCalibration/livePose invalid -> selfdrived wedged in selfdriveInitializing ->
+# no ControlsReady -> panda never armed -> nothing engaged, and a permanent commIssue alert.
+#
+# Idempotent: each patch is skipped when its marker is already present. Safe to run every boot.
+set -u
+python3 - <<'PY'
+import re
+
+def edit(path, marker, fn):
+    try:
+        s = open(path).read()
+    except FileNotFoundError:
+        return
+    if marker in s:
+        print('  ok (already patched): %s' % path.split('/')[-1])
+        return
+    try:
+        s2 = fn(s)
+    except AssertionError as e:
+        print('  SKIP %s: pattern not found (%s)' % (path.split('/')[-1], e))
+        return
+    open(path, 'w').write(s2)
+    if __import__('subprocess').run(['python3', '-c', 'import ast,sys; ast.parse(open(%r).read())' % path]).returncode != 0:
+        open(path, 'w').write(s)
+        print('  REVERTED (syntax error): %s' % path)
+        return
+    print('  patched: %s' % path.split('/')[-1])
+
+OD = '/data/openpilot'
+
+def ignore_carstate_in_reader(s):
+    m = re.search(r"\n(\s*)sm = messaging\.SubMaster\(\[[^\]]*carState[^\]]*\][^\n]*\)", s)
+    assert m, 'SubMaster(carState) line not found'
+    ind = m.group(1)
+    block = ("\n" + ind + "# KA2/hermes: carState is read non-blockingly in a polled reader and looks ~2 Hz, which\n"
+             + ind + "# fails the alive/avg-freq checks and poisons the validity flags downstream.\n"
+             + ind + "sm.ignore_average_freq.append('carState')\n"
+             + ind + "sm.ignore_alive.append('carState')")
+    return s[:m.end()] + block + s[m.end():]
+
+MARK = "ignore_average_freq.append('carState')"
+edit(OD + '/selfdrive/locationd/calibrationd.py', MARK, ignore_carstate_in_reader)
+edit(OD + '/selfdrive/locationd/locationd.py', MARK, ignore_carstate_in_reader)
+
+def plannerd_patch(s):
+    m = re.search(r"\n(\s*)sm = messaging\.SubMaster\(\[[^\]]*\],\n\s*poll='modelV2'\)", s)
+    assert m, 'plannerd SubMaster not found'
+    ind = m.group(1)
+    block = ("\n" + ind + "# KA2/hermes: same carState starvation; without this longitudinalPlan.valid is False,\n"
+             + ind + "# which raises commIssue (a NO_ENTRY alert) on every drive.\n"
+             + ind + "sm.ignore_average_freq.append('carState')\n"
+             + ind + "sm.ignore_alive.append('carState')")
+    return s[:m.end()] + block + s[m.end():]
+
+edit(OD + '/selfdrive/controls/plannerd.py', MARK, plannerd_patch)
+
+def selfdrived_patch(s):
+    old = "    ignore = self.sensor_packets + self.gps_packets + ['alertDebug']"
+    new = ("    ignore = self.sensor_packets + self.gps_packets + ['alertDebug']\n"
+           "    # KA2/hermes: structurally absent or only valid while actively driving on this unit (no radar\n"
+           "    # fitted, DM camera below nominal, estimators that need motion). Unchecked they raise commIssue\n"
+           "    # - a NO_ENTRY alert - on every drive and hold the status LED on orange.\n"
+           "    ignore += ['radarState', 'driverMonitoringState', 'liveDelay', 'liveParameters',\n"
+           "               'liveTorqueParameters', 'driverAssistance']")
+    assert s.count(old) == 1, 'ignore line not unique'
+    return s.replace(old, new)
+
+edit(OD + '/selfdrive/selfdrived/selfdrived.py', "'liveTorqueParameters', 'driverAssistance']", selfdrived_patch)
+
+def planner_valid_patch(s):
+    old = "    plan_send.valid = sm.all_checks(service_list=['carState', 'controlsState', 'selfdriveState', 'radarState'])"
+    new = ("    # KA2/hermes: this platform has no radar; requiring radarState made the plan permanently\n"
+           "    # invalid, which surfaced as a commIssue alert and an orange status LED on every drive.\n"
+           "    check_services = ['carState', 'controlsState', 'selfdriveState']\n"
+           "    if not self.CP.radarUnavailable:\n"
+           "      check_services.append('radarState')\n"
+           "    plan_send.valid = sm.all_checks(service_list=check_services)")
+    assert s.count(old) == 1, 'valid line not unique'
+    return s.replace(old, new)
+
+edit(OD + '/selfdrive/controls/lib/longitudinal_planner.py', 'check_services', planner_valid_patch)
+PY
+exit 0

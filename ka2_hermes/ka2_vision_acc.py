@@ -304,6 +304,27 @@ def decide(state, tuning, v_kmh, setpoint_kmh, engaged, now):
   return None, "ahead allows %.0f km/h; setpoint %.0f km/h is fine" % (cap, setpoint_kmh)
 
 
+PRESS_ERR = "/data/hermes/acc/press_errors.jsonl"   # full tool output, only ever written on a failure
+
+
+def _press_failed(action, button, rc, stdout, stderr):
+  """A failed press must leave enough behind to be diagnosed later.
+
+  This used to keep just the last line of the tool's output, truncated to 120 chars: a whole drive's
+  worth of failures was stored as the literal string 'st)' and the cause was unrecoverable once the box
+  rebooted (its journal only keeps the current boot). Now the tool's full stdout and stderr go to their
+  own file, and the reply carried into the audit row is long enough to read."""
+  row = {"t": time.time(), "action": action, "button": button, "rc": rc,
+         "stdout": (stdout or "").strip()[-4000:], "stderr": (stderr or "").strip()[-4000:]}
+  try:
+    with open(PRESS_ERR, "a") as fh:
+      fh.write(json.dumps(row) + "\n")
+  except OSError as exc:
+    row["log_error"] = str(exc)[:80]
+  flat = " ".join((row["stdout"] + " " + row["stderr"] + " " + row.get("log_error", "")).split())
+  return "press FAILED rc=%s: %s" % (rc, flat[-400:] if flat else "no output from the tool")
+
+
 def press_once(action, dry_run=False):
   """One step, through the press tool so its gates and audit stay the only rules. 'up' uses the + pattern."""
   button = "step" if action == "up" else "set"
@@ -314,9 +335,21 @@ def press_once(action, dry_run=False):
     p = subprocess.run([sys.executable, PRESS_TOOL, "--button", button],
                        capture_output=True, text=True, timeout=15)
     out = (p.stdout or p.stderr or "").strip().splitlines()
-    return p.returncode == 0, (out[-1][:120] if out else "no output")
+    if p.returncode == 0:
+      return True, (out[-1][:120] if out else "no output")
+    reply = _press_failed(action, button, p.returncode, p.stdout, p.stderr)
+    print(reply)                      # full text into the journal too, while this boot still has it
+    return False, reply
   except Exception as exc:
-    return False, "press tool did not run: %s" % str(exc)[:100]
+    reply = _press_failed(action, button, "exception", "", str(exc))
+    print(reply)
+    return False, reply
+
+
+def acc_was_off(reply):
+  """True when the reason a press did not land is that the car's ACC was not engaged at that moment."""
+  low = reply.lower()
+  return ("not engaged" in low) or ("is not switched on" in low) or ("enabled=false" in low)
 
 
 def audit(row):
@@ -329,6 +362,7 @@ def audit(row):
 
 def new_state():
   return {"cap_kmh": None, "d_m": None, "saw_bend": False, "steps": 0, "last_press": -1e9,
+          "defer_streak": 0,
           "bend_gone_since": None, "lowered_kmh": 0.0, "base_kmh": None,
           "lead_cap_kmh": None, "lead_d_m": None, "saw_lead": False, "lead_steps": 0,
           "lead_gone_since": None, "last_src": "bend"}
@@ -407,6 +441,10 @@ NO_PRESS_DECEL_MS2 = 0.4   # never touch the buttons while the car is already de
                           # is read as CANCEL and drops the ACC (seen 2026-09-25).
 PRESS_BACKOFF_S = 20.0    # after a press the car ignores, or answers with 'enabled=False',
                           # wait this long before trying again instead of nagging it.
+DEFER_STREAK_MAX = 3      # a press the car could not take because its own ACC was off is not a refusal:
+                          # stay armed and retry on the app's own cooldown, so a bend or a car ahead that
+                          # arrives during one of those flickers still gets its step. After this many in a
+                          # row the ACC is genuinely off, not flickering, and the full backoff applies.
 
 
 def main():
@@ -467,24 +505,44 @@ def main():
     action, reason = decide(state, tuning, v_kmh, effective, bool(cs.cruiseState.enabled), now)
     if action:
       ok, reply = press_once(action, a.dry_run)
-      state["last_press"] = now
-      if (not ok) or ("enabled=False" in reply) or ("(+0.0)" in reply) or ("(-0.0)" in reply):
-        # the car ignored the press, or took it as a cancel - stop poking it for a while
+      landed = ok and ("enabled=False" not in reply) and ("(+0.0)" not in reply) and ("(-0.0)" not in reply)
+      if landed:
+        state["last_press"] = now
+        state["defer_streak"] = 0
+      elif acc_was_off(reply):
+        # Nothing was pressed: the car's own ACC was off at that instant - the same flicker that disengages
+        # the box. That is not the car refusing us, so stay armed and retry on the app's own cooldown; only a
+        # sustained ACC-off falls back to the full backoff.
+        state["defer_streak"] = state.get("defer_streak", 0) + 1
+        if state["defer_streak"] <= DEFER_STREAK_MAX:
+          state["last_press"] = now
+          print("DEFER %d/%d - car's ACC was off, step not taken, staying armed: %s"
+                % (state["defer_streak"], DEFER_STREAK_MAX, reply[:90]))
+        else:
+          state["last_press"] = now + PRESS_BACKOFF_S
+          print("BACKOFF %.0fs - car's ACC has been off for %d tries: %s"
+                % (PRESS_BACKOFF_S, state["defer_streak"], reply[:90]))
+      else:
+        # the car took the press and ignored it, or took it as a cancel - stop poking it for a while
+        state["defer_streak"] = 0
         state["last_press"] = now + PRESS_BACKOFF_S
         print("BACKOFF %.0fs - car did not accept the press: %s" % (PRESS_BACKOFF_S, reply[:90]))
-      if action == "down":
+      if landed and action == "down":
+        # only a step the car actually took moves the books: booking a refused press would leave the restore
+        # pressing "up" for speed that was never taken off
         state["lowered_kmh"] += STEP_KMH
         if state.get("last_src") == "lead":
           state["lead_steps"] = state.get("lead_steps", 0) + 1
         else:
           state["steps"] += 1
-      else:
+      elif landed:
         state["lowered_kmh"] = max(0.0, state["lowered_kmh"] - STEP_KMH)
       print("%s: %s | %s" % (action.upper(), reason, reply))
       audit({"t": time.time(), "kind": action, "steps": state["steps"],
              "lowered_kmh": state["lowered_kmh"], "base_kmh": state["base_kmh"],
              "cap_kmh": state["cap_kmh"], "d_m": state["d_m"], "setpoint_kmh": round(effective, 1),
-             "v_kmh": round(v_kmh, 1), "why": reason, "press_ok": bool(ok), "reply": reply,
+             "v_kmh": round(v_kmh, 1), "why": reason, "press_ok": bool(ok), "landed": bool(landed),
+             "defer_streak": state.get("defer_streak", 0), "reply": reply,
              "dry_run": bool(a.dry_run)})
     elif a.log_every and sm.updated["modelV2"]:
       print("  v=%.0f base=%s set=%s cap=%s d=%s : %s" % (
