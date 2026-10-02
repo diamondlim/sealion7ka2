@@ -14,6 +14,9 @@ adds is the actuation policy:
     allows it again it raises it back with the car's own + pattern - **never above the setpoint the driver
     had before the first press**. That ceiling is the whole safety argument: this can undo its own work and
     nothing more. It never invents a faster target than the driver's.
+  * The handback has its own cadence, separate from the slow-down one: VIS_TURN_ACC_UP_INTERVAL_S (default
+    1.0 s) is the shortest gap between two + presses, so the speed comes back a step a second on a clear
+    road while the slow-down steps keep the slower VIS_TURN_ACC_COOLDOWN_S cadence.
   * It raises only when the road genuinely allows it: no bend within the lookahead, or the bend's comfort
     speed is at least one step plus a margin above the current setpoint. "Straight" is judged by geometry,
     not by the bend having disappeared for a moment.
@@ -62,7 +65,15 @@ TRIGGER_S = 3.0              # start stepping this many seconds before the bend 
 MAX_STEPS = 3                # shipped default: at most 15 km/h taken off per bend. The app may raise
                              # this up to TUNING_LIMITS' 6 (30 km/h) - the floor, the driver's own setpoint
                              # and the engaged/25 km/h gates are what bound it, not this cap.
-COOLDOWN_S = 2.5             # s between any two presses
+COOLDOWN_S = 2.5             # s between two slow-down (SET) presses
+UP_INTERVAL_S = 1.0          # s between two handback (+) presses - the auto speed increase the owner
+                             # asked for on 2 Oct 2026: a 5 km/h step a second once the road is clear.
+                             # Only ever gates the handback; the slow-down cadence is unaffected.
+REVERSAL_SETTLE_S = 2.5      # but never turn a slow-down step around inside this many seconds. The bend
+                             # detector flickers clear for a frame or two, and with a 1 s handback the
+                             # replay showed that turning around that fast setpoint-thrashes (19 pairs of
+                             # press-then-undo in 6 segments) - and on this car every press is a chance
+                             # the PCM reads as cancel. Consecutive handback steps still run 1 s apart.
 RESTORE_MARGIN_KMH = 5.0     # headroom the road must allow above the next step before raising
 MIN_SETPOINT_KMH = 30.0      # the auto-slow floor: never step the setpoint below this
 MAX_RESTORE_KMH = 130.0      # the auto-raise ceiling: never lift the setpoint above this
@@ -101,6 +112,9 @@ TUNING_LIMITS = {
   "VIS_LEAD_ACC_MIN_PROB": (0.3, 0.9),            # model confidence before a car counts as your lead
   "VIS_LEAD_ACC_MAX_STEPS": (0.0, 8.0),           # 0-8 presses = 0-40 km/h off for one lead encounter
   "VIS_TURN_ACC_COOLDOWN_S": (2.5, 15.0),
+  "VIS_TURN_ACC_UP_INTERVAL_S": (1.0, 15.0),      # the handback cadence: 1 s between + steps is the
+                                                  # shortest the app may set; longer hands the speed
+                                                  # back more gently. Never shortens the slow-down cadence.
   "VIS_TURN_ACC_RESTORE_MARGIN_KMH": (5.0, 25.0),
   "VIS_TURN_ACC_MIN_SETPOINT_KMH": (30.0, 90.0),   # the app's auto-slow floor: raise only, never lower
   "VIS_TURN_ACC_MAX_RESTORE_KMH": (60.0, 130.0),   # the app's auto-raise ceiling: lower only, never raise
@@ -110,6 +124,7 @@ _LAST_GOOD = {
   "VIS_TURN_ACC_MIN_RADIUS": MIN_RADIUS, "VIS_TURN_ACC_MIN_V_KMH": MIN_V_KMH,
   "VIS_TURN_ACC_MARGIN_KMH": MARGIN_KMH, "VIS_TURN_ACC_MAX_STEPS": MAX_STEPS,
   "VIS_TURN_ACC_COOLDOWN_S": COOLDOWN_S, "VIS_TURN_ACC_RESTORE_MARGIN_KMH": RESTORE_MARGIN_KMH,
+  "VIS_TURN_ACC_UP_INTERVAL_S": UP_INTERVAL_S,
   "VIS_TURN_ACC_TRIGGER_S": TRIGGER_S, "VIS_TURN_ACC_LOOKAHEAD_MAX": LOOKAHEAD_MAX,
   "VIS_LEAD_ACC_ENABLED": LEAD_ENABLED, "VIS_LEAD_ACC_LOOKAHEAD_M": LEAD_LOOKAHEAD_M,
   "VIS_LEAD_ACC_MARGIN_KMH": LEAD_MARGIN_KMH, "VIS_LEAD_ACC_MIN_PROB": LEAD_MIN_PROB,
@@ -254,8 +269,10 @@ def decide(state, tuning, v_kmh, setpoint_kmh, engaged, now):
   if v_kmh < tuning["VIS_TURN_ACC_MIN_V_KMH"]:
     return None, "%.0f km/h is below the %.0f km/h floor" % (v_kmh, tuning["VIS_TURN_ACC_MIN_V_KMH"])
   cooldown = tuning["VIS_TURN_ACC_COOLDOWN_S"]
-  if now - state["last_press"] < cooldown:
-    return None, "pressed %.1f s ago" % (now - state["last_press"])
+  up_interval = tuning.get("VIS_TURN_ACC_UP_INTERVAL_S", UP_INTERVAL_S)
+  since_press = now - state["last_press"]
+  if since_press < min(cooldown, up_interval):
+    return None, "pressed %.1f s ago" % since_press
 
   bend_cap = state["cap_kmh"] if bend_on else None
   lead_cap = state["lead_cap_kmh"] if lead_on else None
@@ -266,6 +283,8 @@ def decide(state, tuning, v_kmh, setpoint_kmh, engaged, now):
   # 1. Slow for a bend ahead or a car ahead, whichever asks for less speed. This outranks restoring: the
   #    policy never raises the setpoint while the road or the car in front still demands something slower.
   if cap is not None:
+    if since_press < cooldown:
+      return None, "slow-down step %.1f s ago" % since_press
     if setpoint_kmh <= floor:
       return None, "setpoint already at the %.0f km/h floor" % floor
     if cap <= setpoint_kmh - tuning["VIS_TURN_ACC_MARGIN_KMH"]:
@@ -286,6 +305,10 @@ def decide(state, tuning, v_kmh, setpoint_kmh, engaged, now):
   # 2. Hand the speed back, but only up to the setpoint the driver had before we touched it and never above
   #    the app's auto-raise ceiling, and only when the road geometry actually allows that speed.
   if tuning["VIS_TURN_ACC_RESTORE"] and state["lowered_kmh"] > 0:
+    if since_press < up_interval:
+      return None, "handed speed back %.1f s ago" % since_press
+    if state.get("last_action") == "down" and since_press < REVERSAL_SETTLE_S:
+      return None, "slow-down step %.1f s ago" % since_press
     driver_kmh = state["base_kmh"]
     if driver_kmh is None:
       return None, "no ceiling recorded yet"
@@ -362,7 +385,7 @@ def audit(row):
 
 def new_state():
   return {"cap_kmh": None, "d_m": None, "saw_bend": False, "steps": 0, "last_press": -1e9,
-          "defer_streak": 0,
+          "last_action": None, "defer_streak": 0,
           "bend_gone_since": None, "lowered_kmh": 0.0, "base_kmh": None,
           "lead_cap_kmh": None, "lead_d_m": None, "saw_lead": False, "lead_steps": 0,
           "lead_gone_since": None, "last_src": "bend"}
@@ -416,6 +439,7 @@ def replay(path, verbose=False):
       reasons[reason.split(";")[0].split(",")[0]] += 1
       if action:
         state["last_press"] = t - t0
+        state["last_action"] = action
         if action == "down":
           state["lowered_kmh"] += STEP_KMH
           state["steps"] += 1
@@ -508,6 +532,7 @@ def main():
       landed = ok and ("enabled=False" not in reply) and ("(+0.0)" not in reply) and ("(-0.0)" not in reply)
       if landed:
         state["last_press"] = now
+        state["last_action"] = action
         state["defer_streak"] = 0
       elif acc_was_off(reply):
         # Nothing was pressed: the car's own ACC was off at that instant - the same flicker that disengages
@@ -516,6 +541,7 @@ def main():
         state["defer_streak"] = state.get("defer_streak", 0) + 1
         if state["defer_streak"] <= DEFER_STREAK_MAX:
           state["last_press"] = now
+          state["last_action"] = action
           print("DEFER %d/%d - car's ACC was off, step not taken, staying armed: %s"
                 % (state["defer_streak"], DEFER_STREAK_MAX, reply[:90]))
         else:

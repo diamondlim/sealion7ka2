@@ -172,9 +172,14 @@ TUNING_TITLES = {
                              "front of you. The auto-slow floor still binds."),
   "VIS_TURN_ACC_COOLDOWN_S": ("Seconds between auto-slow steps",
                               "How long the bridge waits before taking the next 5 km/h step off the ACC "
-                              "setpoint - and how long it waits between handing speed back. Longer "
-                              "only: 2.5 s is the fastest cadence the car tolerates, and stretching it "
-                              "makes the slowing gentler and easier to follow."),
+                              "setpoint. Longer only: 2.5 s is the fastest cadence the car tolerates, and "
+                              "stretching it makes the slowing gentler and easier to follow. The handback "
+                              "cadence below is set separately."),
+  "VIS_TURN_ACC_UP_INTERVAL_S": ("Seconds between auto speed increase steps",
+                                 "How long the bridge waits between the + steps that hand the speed back "
+                                 "after a bend: 1 s means a 5 km/h step a second while the road stays "
+                                 "clear. It never raises above the setpoint you set yourself, and it does "
+                                 "not change the auto-slow cadence above."),
   "VIS_TURN_ACC_ENABLED": ("Auto-slow for bends (on/off)",
                            "1 = the bridge may step the ACC setpoint down for a bend the model sees "
                            "ahead, and hand it back afterwards. 0 = off. Re-read from the tuning file "
@@ -209,6 +214,7 @@ TUNING_STEPS = {
   "VIS_TURN_ACC_MARGIN_KMH": 1.0,
   "VIS_TURN_ACC_RESTORE_MARGIN_KMH": 1.0,
   "VIS_TURN_ACC_COOLDOWN_S": 0.5,           # half a second per press on a 2.5-15 s range
+  "VIS_TURN_ACC_UP_INTERVAL_S": 0.5,        # half a second per press on a 1-15 s range
   "VIS_LEAD_ACC_ENABLED": 1.0,              # 0/1 toggle
   "VIS_LEAD_ACC_LOOKAHEAD_M": 10.0,         # 10 m per press on a 60-200 m range
   "VIS_LEAD_ACC_MARGIN_KMH": 1.0,
@@ -226,6 +232,7 @@ TUNING_SOURCES = (
                                      "VIS_TURN_ACC_MAX_RESTORE_KMH": "MAX_RESTORE_KMH",
                                      "VIS_TURN_ACC_MAX_STEPS": "MAX_STEPS",
                                      "VIS_TURN_ACC_COOLDOWN_S": "COOLDOWN_S",
+                                     "VIS_TURN_ACC_UP_INTERVAL_S": "UP_INTERVAL_S",
                                      "VIS_TURN_ACC_RESTORE": "RESTORE",
                                      "VIS_TURN_ACC_A_LAT": "A_LAT",
                                      "VIS_TURN_ACC_TRIGGER_S": "TRIGGER_S",
