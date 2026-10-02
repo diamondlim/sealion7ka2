@@ -87,8 +87,16 @@ def parse_gsv(sentences):
             total = max(total, int(parts[3].split("*")[0]))
         for index in range(4, len(parts) - 3, 4):
             snr = parts[index + 3].split("*")[0].strip()
-            if snr.isdigit() and int(snr) > 0:
-                with_signal += 1
+            # SNR arrives as a text decimal ("22.0") and is blank for satellites below the reporting
+            # threshold. `snr.isdigit()` is therefore False for every satellite that HAS a signal, so
+            # with_signal stayed 0 and the heartbeat announced "no satellite reports signal
+            # (antenna/RF path)" while the receiver was fixing on 10-12 satellites at HDOP 0.6.
+            # Compare as a number; a blank field stays the genuine no-signal case.
+            try:
+                if float(snr) > 0:
+                    with_signal += 1
+            except ValueError:
+                pass
     return total, with_signal
 
 
