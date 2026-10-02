@@ -55,6 +55,7 @@ except ImportError:                    # ...so --selftest stays runnable off the
 PARAMS = os.environ.get("KA2_PARAMS_DIR", "/data/params/d")
 AUDIT = os.environ.get("KA2_AUDIT", "/data/hermes/bt_audit.log")
 POSE_PATH = os.environ.get("KA2_POSE_PATH", "/dev/shm/ka2_pose.json")
+GPS_PATH = os.environ.get("KA2_GPS_PATH", "/dev/shm/ka2_gps.json")
 TUNING_PATH = os.environ.get("KA2_TUNING_PATH", "/data/hermes/tuning.json")
 CONTROLD = os.environ.get("KA2_CONTROLD", "/data/openpilot/selfdrive/controls/controlsd.py")
 MEDIA = "/data/media"
@@ -62,6 +63,9 @@ SPP_UUID = "00001101-0000-1000-8000-00805F9B34FB"
 ADAPTER_PATH = "/org/bluez/hci0"
 TCP_HOST, TCP_PORT = "127.0.0.1", 9911      # loopback-only: a test path, not a second door
 POSE_HOT_S = 2.0                            # a pose older than this is reported as stale
+GPS_HOT_S = 15.0                            # the AT publisher normally writes every second, but one
+                                            # poll can block for several seconds on mmcli - a tighter
+                                            # threshold flagged a healthy publisher as stopped
 
 # The lane-correction knobs are not params: the car reads them from a JSON file that controlsd
 # re-reads about once a second. The ranges and the shipped defaults are parsed out of the *deployed*
@@ -886,6 +890,7 @@ def device_info():
   except Exception:
     pass
   pose = read_pose()
+  gps = read_gps()
   return {
     "dongle": read_or_default({"k": "DongleId"}),
     "serial": read_or_default({"k": "HardwareSerial"}),
@@ -900,6 +905,8 @@ def device_info():
     "metered": read_or_default({"k": "NetworkMetered", "default": "0"}),
     "free_gb": free_gb, "uptime_s": uptime,
     "pose": {"ok": pose.get("ok", 0), "why": pose.get("why", ""), "age": pose.get("age")},
+    "gps": {"ok": gps.get("ok", 0), "why": gps.get("why", ""), "age": gps.get("age"),
+            "sats": gps.get("sats"), "hdop": gps.get("hdop")},
   }
 
 
@@ -916,6 +923,30 @@ def read_pose():
     pose["ok"] = 0
     pose["why"] = "pose publisher stale (%.1fs)" % age
   return pose
+
+
+def read_gps():
+  """The newest GNSS state, with its own age, for the app's lane page.
+
+  Both publishers write the same file shape: a fix carries lat/lon/sats/hdop, no fix carries the
+  reason it has none. That reason is the point of the row - "11 of 14 satellites report signal" is a
+  different situation from a publisher that is not running at all, and the owner asked to see which.
+  """
+  try:
+    with open(GPS_PATH) as fh:
+      gps = json.load(fh)
+  except Exception as exc:
+    return {"ok": 0, "why": "GNSS publisher not running (%s)" % type(exc).__name__, "age": None}
+  age = round(time.time() - float(gps.get("at", 0.0)), 1)
+  out = {"ok": 1 if gps.get("ok") else 0, "age": age}
+  for key in ("lat", "lon", "alt", "speed_ms", "bearing", "sats", "hdop", "source", "why"):
+    if gps.get(key) is not None:
+      out[key] = gps[key]
+  if age > GPS_HOT_S:
+    out["ok"] = 0
+    out["stale"] = 1
+    out["why"] = "GNSS state is %.0f s old" % age
+  return out
 
 
 # --- the line protocol ----------------------------------------------------------------
@@ -1162,6 +1193,8 @@ class Session:
 
   KEEPALIVE_S = 5.0       # an idle RFCOMM link is what phone Bluetooth stacks drop
   STATE_EVERY_S = 1.0     # how often the car's state is re-read and, if changed, pushed
+  GPS_EVERY_S = 1.0       # GNSS state rides along with the lane stream this often: it changes at
+                          # about that rate, and it is what the lane page shows as its GPS row
   READ_TIMEOUT_S = 0.1    # how long a read waits before the pose loop takes a turn
   SEND_TIMEOUT_S = 5.0    # a write gets far longer: a Bluetooth link that is briefly busy must not
                           # kill the session, which is exactly what a 0.1 s write timeout did
@@ -1173,6 +1206,7 @@ class Session:
     self.buf = b""
     self.opening = 0        # how many of this session's commands have been logged
     self.sent_at = time.time()
+    self.gps_at = 0.0
     self.last_state = None
     self.state_at = 0.0
 
@@ -1210,6 +1244,9 @@ class Session:
           now = time.time()
           if self.pose:
             self.try_send_pose("P " + json.dumps(read_pose(), separators=(",", ":")))
+            if now - self.gps_at > self.GPS_EVERY_S:
+              self.gps_at = now
+              self.try_send_pose("G " + json.dumps(read_gps(), separators=(",", ":")))
           elif now - self.sent_at > self.KEEPALIVE_S:
             # Nothing to say for five seconds: say so anyway. A phone's Bluetooth stack treats a silent
             # RFCOMM link as dead and drops it, which showed up as connections that kept resetting.
@@ -1245,6 +1282,10 @@ class Session:
             arg = line.strip().split()[1] if len(line.strip().split()) > 1 else ""
             self.pose = arg.strip() in ("1", "on", "true")
             self.send_line("OK pose-%s" % ("on" if self.pose else "off"))
+            if self.pose:
+              # So the lane page has a GPS row from its first frame rather than up to a second later.
+              self.gps_at = time.time()
+              self.try_send_pose("G " + json.dumps(read_gps(), separators=(",", ":")))
             log("pose %s %s" % ("on" if self.pose else "off", self.label))
             continue
           for reply in handle(line):
