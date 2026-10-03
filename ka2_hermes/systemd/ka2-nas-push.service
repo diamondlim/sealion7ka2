@@ -1,0 +1,11 @@
+[Unit]
+Description=KA2 drive logs to NAS over SMB (the box is the writer; no host in the path)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=PYTHONPATH=/data/hermes/pylibs
+ExecStart=/usr/bin/python3 /data/hermes/ka2_nas_push.py --quiet --timeout 240
+StandardOutput=append:/data/hermes/nas_push.log
+StandardError=append:/data/hermes/nas_push.log

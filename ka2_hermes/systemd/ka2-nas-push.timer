@@ -1,0 +1,10 @@
+[Unit]
+Description=Push new KA2 drive logs to the NAS every five minutes
+
+[Timer]
+OnBootSec=150
+OnUnitActiveSec=5min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target
