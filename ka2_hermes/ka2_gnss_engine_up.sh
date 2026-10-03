@@ -61,6 +61,9 @@ changed=""
 
 if [ "$clock_ok" != "1" ]; then
   at "AT+CCLK=\"${now_utc}+00\"" >/dev/null
+  # Also let the modem keep its own RTC in step with the network from here on, so a power cycle does not
+  # leave it in 1980 again. Harmless to repeat; it is only reached when the clock was actually wrong.
+  at 'AT+CTZU=1' >/dev/null
   recheck=$(at 'AT+CCLK?' | sed -n 's/.*"\([^"]*\)".*/\1/p' | head -1)
   changed="$changed clock=${modem_clock:-none}->${recheck:-?}"
   say "clock was wrong (${modem_clock:-none}) - set to ${now_utc}, now ${recheck:-?}"
