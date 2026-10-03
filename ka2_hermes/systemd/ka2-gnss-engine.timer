@@ -1,0 +1,10 @@
+[Unit]
+Description=Keep the KA2 modem GNSS engine running (it is off after every power cycle)
+
+[Timer]
+OnBootSec=120
+OnUnitActiveSec=10min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

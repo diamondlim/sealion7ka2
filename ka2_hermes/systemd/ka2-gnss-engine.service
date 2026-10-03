@@ -1,0 +1,13 @@
+[Unit]
+Description=Start the KA2 modem GNSS engine and top up its orbit data
+After=network-online.target ModemManager.service
+Wants=network-online.target
+# The engine is off after every power cycle, so this is the one shot that turns it back on.
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/bash /data/hermes/ka2_gnss_engine_up.sh
+StandardOutput=append:/data/hermes/logs/ka2_gnss_engine.log
+StandardError=append:/data/hermes/logs/ka2_gnss_engine.log
+# The AT conversation plus the orbit download can take a couple of minutes on a slow link.
+TimeoutStartSec=420
