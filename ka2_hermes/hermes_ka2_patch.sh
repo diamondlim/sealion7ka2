@@ -38,6 +38,21 @@ def edit(path, marker, fn):
 
 OD = '/data/openpilot'
 
+def drop_button_keepalive(s):
+    old = ("        else:\n"
+           "          if CS.out.standstill and CC.enabled and (self.frame % BUTTON_KEEPALIVE_FRAMES == 0):\n"
+           "            can_sends.append(send_buttons(self.packer, 1, 0, self.button_send_bus))\n")
+    assert old in s, 'keepalive block not found'
+    new = ("        else:\n"
+           "          # Stock-ACC cars: never press a speed button as a keepalive. SET_BTN+RES_BTN is a real\n"
+           "          # set-speed-up press here, so the old keepalive crept the set speed upward and its\n"
+           "          # frames (built outside acc_button.build) reached the bus with no counter/checksum.\n"
+           "          pass\n")
+    return s.replace(old, new, 1)
+
+edit(OD + '/opendbc_repo/opendbc/car/byd/cam_lka/carcontroller.py',
+     'never press a speed button as a keepalive', drop_button_keepalive)
+
 def ignore_carstate_in_reader(s):
     m = re.search(r"\n(\s*)sm = messaging\.SubMaster\(\[[^\]]*carState[^\]]*\][^\n]*\)", s)
     assert m, 'SubMaster(carState) line not found'

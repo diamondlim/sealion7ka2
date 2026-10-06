@@ -224,8 +224,12 @@ class CarController(CarControllerBase):
           brake_hold = CS.out.standstill and actuators.accel < 0
           can_sends.append(create_accel_command(self.packer, actuators.accel, long_active, self.accel_mult, brake_hold))
         else:
-          if CS.out.standstill and CC.enabled and (self.frame % BUTTON_KEEPALIVE_FRAMES == 0):
-            can_sends.append(send_buttons(self.packer, 1, 0, self.button_send_bus))
+          # Stock-ACC cars: never press a speed button as a keepalive.
+          # On this platform SET_BTN+RES_BTN is a real set-speed-up press, so the old keepalive crept the
+          # set speed upward and its frames (built outside acc_button.build) reached the bus with no
+          # counter and no checksum. Removed 6 Oct 2026 at the owner request: the app press path
+          # (card + acc_button.py) is the only thing allowed to press a stock-ACC button.
+          pass
 
     if self.CP.carFingerprint in (CAR.BYD_ATTO3, CAR.BYD_M6, CAR.BYD_SEAL, CAR.BYD_SEAL6, CAR.BYD_SEALION7, CAR.BYD_SHARK):
       # Atto: always keep fake hands-on torque (no 50/150 off-cycle) and TX at ~50Hz.
