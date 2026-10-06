@@ -355,7 +355,7 @@ def press_once(action, dry_run=False):
   lowers it (five consecutive audited presses: set 30->35, step 35->30). The pair used to be the other
   way round, which made every bend-slow raise the setpoint and every hand-back lower it.
   """
-  button = "set" if action == "up" else "step"
+  button = "step" if action == "up" else "set"
   if dry_run:
     print("  [dry-run] would press %s (%s)" % (button, action))
     return True, "dry-run"
