@@ -38,6 +38,19 @@ def edit(path, marker, fn):
 
 OD = '/data/openpilot'
 
+def drop_cancel_press(s):
+    old = ('    if pcm_cancel_cmd:\n'
+           '      can_sends.append(send_buttons(self.packer, 0, 1, self.button_send_bus))\n')
+    assert old in s, 'cancel block not found'
+    new = ('    # TEST 6 Oct 2026 (owner request): do not press the car ACC cancel button.\n'
+           '    # openpilot sent this whenever it was not engaged itself.\n'
+           '    # if pcm_cancel_cmd:\n'
+           '    #   can_sends.append(send_buttons(self.packer, 0, 1, self.button_send_bus))\n')
+    return s.replace(old, new, 1)
+
+edit(OD + '/opendbc_repo/opendbc/car/byd/cam_lka/carcontroller.py',
+     'do not press the car ACC cancel button', drop_cancel_press)
+
 def drop_button_keepalive(s):
     old = ("        else:\n"
            "          if CS.out.standstill and CC.enabled and (self.frame % BUTTON_KEEPALIVE_FRAMES == 0):\n"

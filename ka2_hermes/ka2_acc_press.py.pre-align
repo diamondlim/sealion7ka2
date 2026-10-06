@@ -36,30 +36,6 @@ import os
 import sys
 import time
 
-def _align_to_car_frame(offset_s=0.004, max_wait_s=0.30):
-    """Block until the car's own 0x3B0 has just been seen, so the press starts in a clear slot.
-
-    card consumes the request on its next CAN frame, so the moment this function writes decides when
-    the button actually goes out. Returns True if it aligned, False if it gave up (press still goes).
-    """
-    try:
-        sm = messaging.SubMaster(["can"])
-        deadline = time.monotonic() + max_wait_s
-        last = None
-        while time.monotonic() < deadline:
-            sm.update(5)
-            for f in sm["can"]:
-                if getattr(f, "address", None) == 0x3B0 and getattr(f, "src", None) == 0:
-                    last = time.monotonic()
-            if last is not None and (time.monotonic() - last) >= offset_s:
-                return True
-    except Exception:
-        return False
-    return False
-
-
-
-
 BUTTONS = {
     # name: bits to set -- from opendbc/dbc/byd_general_pt.dbc message 944 PCM_BUTTONS, corrected against
     # the car's own transmits (which is how we know the speed rocker sets SET and RES together)
@@ -171,7 +147,6 @@ def press(button, dry_run=False, settle_s=1.2, frames=None):
         tmp = "%s.tmp.%d" % (ACC_REQUEST, os.getpid())
         with open(tmp, "w") as fh:
             # "<button> <unix_ms> [frames]" - card clamps the frame count
-            _align_to_car_frame()          # time the press to the car's own 0x3B0 frame
             fh.write("%s %d%s" % (button, int(time.time() * 1000), "" if frames is None else " %d" % frames))
         os.replace(tmp, ACC_REQUEST)       # atomic: card never reads a half-written request
     except OSError as exc:
