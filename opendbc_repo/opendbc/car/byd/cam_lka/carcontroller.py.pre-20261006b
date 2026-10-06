@@ -249,8 +249,10 @@ class CarController(CarControllerBase):
           create_steering_torque_spoof_camera(self.packer, lat_active, CS.out.steeringTorque, spoof_active)
         )
 
-    if pcm_cancel_cmd:
-      can_sends.append(send_buttons(self.packer, 0, 1, self.button_send_bus))
+    # TEST 6 Oct 2026 (owner request): do not press the car ACC cancel button.
+    # openpilot sent this whenever it was not engaged itself.
+    # if pcm_cancel_cmd:
+    #   can_sends.append(send_buttons(self.packer, 0, 1, self.button_send_bus))
 
     new_actuators = actuators.as_builder()
     new_actuators.steeringAngleDeg = apply_angle
