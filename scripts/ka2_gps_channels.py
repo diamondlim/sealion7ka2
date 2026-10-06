@@ -1,5 +1,13 @@
-"""Does the fork's software stack hold a GPS fix? Read the cereal channels, don't infer."""
+"""Does the fork's software stack hold a GPS fix? Read the cereal channels, don't infer.
+
+Runs two ways: file, or stdin. When the fork's root is not sys.path[0] (i.e. running this as a path
+outside it), cereal cannot be imported from the script's own directory - so add the fork root explicitly.
+"""
+import os
+import sys
 import time
+
+sys.path.insert(0, "/data/openpilot")
 
 from cereal import messaging
 
