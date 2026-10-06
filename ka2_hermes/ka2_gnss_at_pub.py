@@ -79,19 +79,24 @@ def ask(kind, timeout=12):
 
 
 def parse_gsv(sentences):
-    """(satellites in view, how many report any signal) - the second number is the antenna question."""
+    """(satellites actually tracked, how many report signal) - the second number is the antenna question.
+
+    Only satellites carrying an elevation and azimuth are being tracked. Almanac filler arrives with a
+    blank geometry and a tidy, identical SNR (~34) on every single poll, which made the heartbeat claim
+    signal that did not exist - a real C/N0 varies per satellite and per elevation. Count geometry first,
+    then compare SNR as a number (it is a text decimal, blank below the reporting threshold).
+    """
     total = with_signal = 0
     for sentence in sentences:
         parts = sentence.split(",")
-        if len(parts) > 3 and parts[3].split("*")[0].isdigit():
-            total = max(total, int(parts[3].split("*")[0]))
         for index in range(4, len(parts) - 3, 4):
+            prn = parts[index].split("*")[0].strip()
+            elev = parts[index + 1].strip()
+            azim = parts[index + 2].strip()
             snr = parts[index + 3].split("*")[0].strip()
-            # SNR arrives as a text decimal ("22.0") and is blank for satellites below the reporting
-            # threshold. `snr.isdigit()` is therefore False for every satellite that HAS a signal, so
-            # with_signal stayed 0 and the heartbeat announced "no satellite reports signal
-            # (antenna/RF path)" while the receiver was fixing on 10-12 satellites at HDOP 0.6.
-            # Compare as a number; a blank field stays the genuine no-signal case.
+            if not prn or not elev or not azim:
+                continue
+            total += 1
             try:
                 if float(snr) > 0:
                     with_signal += 1
