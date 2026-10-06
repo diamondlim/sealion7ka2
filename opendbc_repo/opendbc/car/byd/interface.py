@@ -73,7 +73,9 @@ class CarInterface(CarInterfaceBase):
       ret.steerControlType = car.CarParams.SteerControlType.angle
       ret.lateralTuning.pid.kiV, ret.lateralTuning.pid.kpV = [[0.52, 0.43, 0.32], [1.5, 1.4, 1.1]]
       ret.safetyConfigs[0].safetyParam = 2
-      ret.openpilotLongitudinalControl = False
+      # TRIAL 6 Oct 2026 (owner request): this was False. Testing openpilot vision longitudinal on this
+      # car. Stationary bench test first - if the car does not accept the gas/brake commands, revert.
+      ret.openpilotLongitudinalControl = True
       ret.radarUnavailable = True
       ret.wheelSpeedFactor = 0.6336
     else:
