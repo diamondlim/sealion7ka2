@@ -349,8 +349,13 @@ def _press_failed(action, button, rc, stdout, stderr):
 
 
 def press_once(action, dry_run=False):
-  """One step, through the press tool so its gates and audit stay the only rules. 'up' uses the + pattern."""
-  button = "step" if action == "up" else "set"
+  """One step, through the press tool so its gates and audit stay the only rules.
+
+  'up' is `set` and 'down' is `step`: measured on this car, `set` raises the ACC set speed and `step`
+  lowers it (five consecutive audited presses: set 30->35, step 35->30). The pair used to be the other
+  way round, which made every bend-slow raise the setpoint and every hand-back lower it.
+  """
+  button = "set" if action == "up" else "step"
   if dry_run:
     print("  [dry-run] would press %s (%s)" % (button, action))
     return True, "dry-run"
