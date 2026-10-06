@@ -38,31 +38,6 @@ def edit(path, marker, fn):
 
 OD = '/data/openpilot'
 
-def continue_car_counter(s):
-    old = "    can_list = can_capnp_to_list(can_strs)"
-    assert old in s, 'can_list line not found'
-    new = old + '''
-
-    # Follow the car's own 0x3B0 button counter so an injected press continues its sequence
-    try:
-      for _entry in can_list:
-        _cands = (_entry,) if hasattr(_entry, "address") else _entry
-        for _g in _cands:
-          if getattr(_g, "address", None) == 0x3B0 and getattr(_g, "src", None) == 0:
-            _dat = getattr(_g, "dat", None)
-            if _dat is not None and len(_dat) > 6:
-              self.acc_button_state["car_counter"] = (_dat[6] >> 4) & 0x0F
-    except Exception:
-      pass'''
-    s = s.replace(old, new, 1)
-    s = s.replace('{"name": None, "frames": 0, "counter": 0, "last": 0.0}',
-                  '{"name": None, "frames": 0, "counter": 0, "car_counter": 0, "last": 0.0}', 1)
-    s = s.replace('  state["counter"] = 0\n',
-                  '  state["counter"] = (state.get("car_counter", 0) + 1) & 0x0F   # follow the car\'s own sequence\n', 1)
-    return s
-
-
-edit(OD + '/selfdrive/car/card.py', 'car_counter', continue_car_counter)
 
 
 def drop_button_keepalive(s):
