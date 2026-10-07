@@ -124,7 +124,7 @@ def acc_button_frames(CS, state):
 
   state["name"] = name
   state["frames"] = held + 1        # +1 so the release frame follows the press
-  state["counter"] = (state.get("car_counter", 0) + 1) & 0x0F   # follow the car's own sequence
+  state["counter"] = 0
   state["last"] = time.time()
   cloudlog.info("stock ACC button press: %s (%d frames)" % (name, held))
   return _one_button_frame(state)
@@ -150,7 +150,7 @@ class Car:
 
     self.params = Params()
     # stock-ACC button presses (BYD): request consumed from ACC_REQUEST_PATH, see acc_button_frames
-    self.acc_button_state = {"name": None, "frames": 0, "counter": 0, "car_counter": 0, "last": 0.0}
+    self.acc_button_state = {"name": None, "frames": 0, "counter": 0, "last": 0.0}
 
     self.can_callbacks = can_comm_callbacks(self.can_sock, self.pm.sock['sendcan'])
 
@@ -259,6 +259,8 @@ class Car:
             _dat = getattr(_g, "dat", None)
             if _dat is not None and len(_dat) > 6:
               self.acc_button_state["car_counter"] = (_dat[6] >> 4) & 0x0F
+              if not _dat[0] & 0x18:      # no SET/RES bit set = the car's idle frame
+                self.CI.CS.sng_pcm_idle = bytes(_dat)   # SNG clones this frame
     except Exception:
       pass
 

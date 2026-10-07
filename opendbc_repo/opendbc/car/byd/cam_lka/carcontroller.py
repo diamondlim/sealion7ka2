@@ -7,11 +7,13 @@ from opendbc.car.byd.cam_lka.bydcan import (
   create_accel_command,
   create_can_steer_command,
   create_lkas_hud,
+  create_resume_sequence,
   create_steering_torque_spoof_camera,
   send_buttons,
 )
 from opendbc.car.byd.values import DBC, CAR, ACCEL_MULT, CANBUS, BYD_ATTO_STYLE_PLATFORMS, BYD_OP_LONG_PLATFORMS
 from opendbc.car.byd.values import CarControllerParams
+from opendbc.car.sng_helper import SngHelper
 from opendbc.car.interfaces import CarControllerBase
 from opendbc.car.lateral import apply_std_steer_angle_limits
 
@@ -31,6 +33,8 @@ LKA_COOLDOWN_MIN_FRAMES = 30
 
 
 BUTTON_KEEPALIVE_FRAMES = 100
+SNG_INITIAL_PRESS_DELAY_S = 30  # Seal/SL7/Shark only
+SNG_RESUME_STEP_FRAMES = 5  # 50 ms at 100 Hz
 SPOOF_DURATION_FRAMES = 50
 SPOOF_CYCLE_FRAMES = 150
 
@@ -53,11 +57,62 @@ class CarController(CarControllerBase):
     self.lka_cooldown = 0
     self.prev_press = False
     self.prev_res_press = False
+    self.prev_cruise_enabled = self.sng_ready_enter = False
     self.lka_latched = False
     self.button_send_bus = CANBUS.cam_bus if CP.carFingerprint in BYD_ATTO_STYLE_PLATFORMS else CANBUS.main_bus
     self.seal6_steer_override = False
     self.seal6_override_clear = 0
     self.seal6_override_enter = 0
+    self.resume_sequence_frames = []
+    self.resume_sequence_next_frame = 0
+    self.sng_saw_wait = False
+    self.sng_tx_count = 0
+    self.sng = SngHelper(SNG_INITIAL_PRESS_DELAY_S) if CP.carFingerprint not in BYD_OP_LONG_PLATFORMS else None
+
+  def _start_sng_resume_sequence(self, CS):
+    if not (idle := CS.sng_pcm_idle) or len(idle) < 8 or not (msgs := create_resume_sequence(self.packer, idle, self.button_send_bus)):
+      return None
+    self.resume_sequence_frames = msgs[1:]
+    self.resume_sequence_next_frame = self.frame + SNG_RESUME_STEP_FRAMES
+    return msgs[0]
+
+  def _update_sng(self, CC, CS, can_sends):
+    if self.sng is None or self.CP.openpilotLongitudinalControl:
+      return
+
+    # Seal-style stock ACC SNG: drain SET+RES burst on main bus.
+    if frames := self.resume_sequence_frames:
+      if self.frame >= self.resume_sequence_next_frame:
+        can_sends.append(frames.pop(0))
+        self.resume_sequence_next_frame = self.frame + SNG_RESUME_STEP_FRAMES
+        if not frames:
+          self.sng.pressed(self.frame)
+      if CS.res_btn or CS.out.gasPressed or CS.out.brakePressed:
+        self.sng.pressed(self.frame)
+      return
+
+    # Latch ACC rising while already stopped so HUD lag still uses 0s not 30s delay.
+    self.sng_ready_enter = ((cruise_enabled := CS.out.cruiseState.enabled) and not self.prev_cruise_enabled or self.sng_ready_enter) and CS.out.standstill
+    self.prev_cruise_enabled = cruise_enabled
+
+    if not CS.cruise_standstill:
+      self.sng_saw_wait = self.sng_tx_count = 0
+    elif CS.standstill_wait:
+      self.sng_saw_wait = True
+
+    if self.sng.tick(
+      self.frame,
+      CS.cruise_standstill,
+      CS.out.gasPressed,
+      CS.res_btn,
+      CS.out.brakePressed,
+      self.sng.lead_ready(),
+      ready_on_enter=self.sng_ready_enter,
+    ) is True and (CS.standstill_wait or not self.sng_saw_wait and not self.sng_tx_count):
+      if frame := self._start_sng_resume_sequence(CS):
+        can_sends.append(frame)
+        self.sng_tx_count += 1
+
 
   def _update_lka_latch_state(self, CS):
     if self.CP.carFingerprint == CAR.BYD_SEAL6:
@@ -139,6 +194,7 @@ class CarController(CarControllerBase):
     pcm_cancel_cmd = CC.cruiseControl.cancel
 
     self._update_lka_latch_state(CS)
+    self._update_sng(CC, CS, can_sends)
 
     lat_active = (self.lka_cooldown > LKA_COOLDOWN_MIN_FRAMES) and enabled and self.lka_active and not CS.out.standstill
     steer_req = lat_active
