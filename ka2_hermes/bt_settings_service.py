@@ -188,6 +188,16 @@ TUNING_TITLES = {
                            "1 = the bridge may step the ACC setpoint down for a bend the model sees "
                            "ahead, and hand it back afterwards. 0 = off. Re-read from the tuning file "
                            "about once a second, so it applies without a restart."),
+  "VIS_TURN_ACC_RESTORE_DELAY_S": ("Wait before speeding back up after a bend (s)",
+                                   "How long the bridge waits after its last slow-down step before it "
+                                   "starts handing the speed back. 2.5 s is the fastest the car tolerates: "
+                                   "below it the setpoint thrashes, because the bend detector flickers "
+                                   "clear for a frame or two and each press is a chance the car reads as "
+                                   "cancel. Longer only - raise it for a gentler return."),
+  "VIS_LEAD_ACC_RESTORE_DELAY_S": ("Wait before speeding back up after a car ahead (s)",
+                                   "The same wait for the car-ahead feature, measured from its own last "
+                                   "slow-down step - traffic clearing is not the same event as a bend "
+                                   "ending, so the two are set separately. Longer only."),
 }
 # The step each knob moves by when the phone offers +/- buttons rather than a text field, chosen so
 # a useful change is a few presses: 0.05 on a 0-1 gain, 0.5 m/s on the 5-20 m/s speed floor, and a
@@ -225,6 +235,8 @@ TUNING_STEPS = {
   "VIS_LEAD_ACC_MIN_PROB": 0.05,            # fine steps on a 0.3-0.9 confidence range
   "VIS_LEAD_ACC_MAX_STEPS": 1.0,            # one step at a time
   "VIS_TURN_ACC_ENABLED": 1.0,              # 0/1 toggle
+  "VIS_TURN_ACC_RESTORE_DELAY_S": 0.5,      # half a second per press on a 2.5-30 s range
+  "VIS_LEAD_ACC_RESTORE_DELAY_S": 0.5,
 }
 # Where each live knob lives, and the name of the module-level constant carrying its shipped default.
 # controlsd names its constants after the keys; the bridge tool keeps shorter constant names, so its two
@@ -250,6 +262,8 @@ TUNING_SOURCES = (
                                      "VIS_LEAD_ACC_MARGIN_KMH": "LEAD_MARGIN_KMH",
                                      "VIS_LEAD_ACC_MIN_PROB": "LEAD_MIN_PROB",
                                      "VIS_LEAD_ACC_MAX_STEPS": "LEAD_MAX_STEPS",
+                                     "VIS_TURN_ACC_RESTORE_DELAY_S": "RESTORE_DELAY_BEND_S",
+                                     "VIS_LEAD_ACC_RESTORE_DELAY_S": "RESTORE_DELAY_LEAD_S",
                                      "VIS_TURN_ACC_ENABLED": "ENABLED"}},
 )
 _TUNING_CACHE = {"at": 0.0, "limits": {}, "bases": {}, "supported": set()}

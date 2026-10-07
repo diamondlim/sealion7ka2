@@ -69,11 +69,17 @@ COOLDOWN_S = 2.5             # s between two slow-down (SET) presses
 UP_INTERVAL_S = 1.0          # s between two handback (+) presses - the auto speed increase the owner
                              # asked for on 2 Oct 2026: a 5 km/h step a second once the road is clear.
                              # Only ever gates the handback; the slow-down cadence is unaffected.
-REVERSAL_SETTLE_S = 2.5      # but never turn a slow-down step around inside this many seconds. The bend
-                             # detector flickers clear for a frame or two, and with a 1 s handback the
-                             # replay showed that turning around that fast setpoint-thrashes (19 pairs of
-                             # press-then-undo in 6 segments) - and on this car every press is a chance
-                             # the PCM reads as cancel. Consecutive handback steps still run 1 s apart.
+REVERSAL_SETTLE_S = 2.5      # the floor of the deaccel->accel delay: never turn a slow-down step around
+                             # inside this many seconds. The bend detector flickers clear for a frame or
+                             # two, and with a 1 s handback the replay showed that turning around that
+                             # fast setpoint-thrashes (19 pairs of press-then-undo in 6 segments) - and on
+                             # this car every press is a chance the PCM reads as cancel. Consecutive
+                             # handback steps still run 1 s apart.
+# The delay the owner sets from the app: how long to wait between the last slow-down step and the first
+# speed-up step. Separate per feature because a bend and a car ahead clear differently. The app may only
+# lengthen it - REVERSAL_SETTLE_S is the measured floor, and the hand-back is what thrashed below it.
+RESTORE_DELAY_BEND_S = REVERSAL_SETTLE_S     # VIS_TURN_ACC_RESTORE_DELAY_S
+RESTORE_DELAY_LEAD_S = REVERSAL_SETTLE_S     # VIS_LEAD_ACC_RESTORE_DELAY_S
 RESTORE_MARGIN_KMH = 5.0     # headroom the road must allow above the next step before raising
 MIN_SETPOINT_KMH = 30.0      # the auto-slow floor: never step the setpoint below this
 MAX_RESTORE_KMH = 130.0      # the auto-raise ceiling: never lift the setpoint above this
@@ -118,6 +124,9 @@ TUNING_LIMITS = {
   "VIS_TURN_ACC_RESTORE_MARGIN_KMH": (5.0, 25.0),
   "VIS_TURN_ACC_MIN_SETPOINT_KMH": (30.0, 90.0),   # the app's auto-slow floor: raise only, never lower
   "VIS_TURN_ACC_MAX_RESTORE_KMH": (60.0, 130.0),   # the app's auto-raise ceiling: lower only, never raise
+  "VIS_TURN_ACC_RESTORE_DELAY_S": (2.5, 30.0),     # deaccel->accel delay after a bend. Longer only: 2.5 s
+                                                   # is the measured floor, below it the setpoint thrashes.
+  "VIS_LEAD_ACC_RESTORE_DELAY_S": (2.5, 30.0),     # the same delay for a car ahead, set separately.
 }
 _LAST_GOOD = {
   "VIS_TURN_ACC_ENABLED": ENABLED, "VIS_TURN_ACC_RESTORE": RESTORE, "VIS_TURN_ACC_A_LAT": A_LAT,
@@ -130,6 +139,7 @@ _LAST_GOOD = {
   "VIS_LEAD_ACC_MARGIN_KMH": LEAD_MARGIN_KMH, "VIS_LEAD_ACC_MIN_PROB": LEAD_MIN_PROB,
   "VIS_LEAD_ACC_MAX_STEPS": LEAD_MAX_STEPS,
   "VIS_TURN_ACC_MIN_SETPOINT_KMH": MIN_SETPOINT_KMH, "VIS_TURN_ACC_MAX_RESTORE_KMH": MAX_RESTORE_KMH,
+  "VIS_TURN_ACC_RESTORE_DELAY_S": RESTORE_DELAY_BEND_S, "VIS_LEAD_ACC_RESTORE_DELAY_S": RESTORE_DELAY_LEAD_S,
 }
 
 
@@ -307,8 +317,13 @@ def decide(state, tuning, v_kmh, setpoint_kmh, engaged, now):
   if tuning["VIS_TURN_ACC_RESTORE"] and state["lowered_kmh"] > 0:
     if since_press < up_interval:
       return None, "handed speed back %.1f s ago" % since_press
-    if state.get("last_action") == "down" and since_press < REVERSAL_SETTLE_S:
-      return None, "slow-down step %.1f s ago" % since_press
+    if state.get("last_action") == "down":
+      # The app's deaccel->accel delay, per feature: whichever slow-down has to settle is the last one
+      # made, so a bend waits its own delay and a car ahead waits its own.
+      settle = tuning.get("VIS_LEAD_ACC_RESTORE_DELAY_S" if state.get("last_src") == "lead"
+                          else "VIS_TURN_ACC_RESTORE_DELAY_S", REVERSAL_SETTLE_S)
+      if since_press < settle:
+        return None, "slow-down step %.1f s ago (settle %.1f s)" % (since_press, settle)
     driver_kmh = state["base_kmh"]
     if driver_kmh is None:
       return None, "no ceiling recorded yet"
