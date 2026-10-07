@@ -183,9 +183,6 @@ BYD_OP_LONG_PLATFORMS = (
   CAR.BYD_ATTO3,
   CAR.BYD_M6,
   CAR.BYD_SEAL6,
-  # TRIAL 6 Oct 2026 (owner request): added so openpilot actually transmits an accel command on the
-  # Sealion 7 instead of computing one and discarding it. Parked brake-held bench test first.
-  CAR.BYD_SEALION7,
 )
 
 DBC = CAR.create_dbc_map()

@@ -44,6 +44,12 @@ Every key is re-read about once a second; a missing file or an unreadable value 
 value, and every shipped default is the least aggressive setting in its range. The auto-slow floor is the
 hard bound on how far the setpoint can be walked down.
 
+## Notes
+
+- **`op-long-findings.md`** — why openpilot longitudinal is off on this car, the three gates, the counter
+  that actually blocks the accel command, the parser-bus coupling, and what would have to be built. Read this
+  before re-litigating "can we use openpilot ACC".
+
 ## Rebuilding the box
 
 1. Clone the tracked fork branch — the openpilot-side fixes (rate/alive gating, the radar assumption) are
