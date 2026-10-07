@@ -131,6 +131,57 @@ def acc_state(timeout_s=1.0):
     return None, None, "no carState in %.1fs" % timeout_s
 
 
+def _tuning():
+    """The live tuning file, or {} - a knob here is read at press time, so no restart is needed."""
+    try:
+        with open("/data/hermes/tuning.json") as fh:
+            return json.load(fh)
+    except Exception:
+        return {}
+
+
+def plus_min_kph():
+    """Below this speed a "+" press is not a set-speed step on this car (see plus_blocked)."""
+    try:
+        return float(_tuning().get("ACC_PLUS_MIN_KPH", 20.0))
+    except Exception:
+        return 20.0
+
+
+def car_motion(timeout_s=1.0):
+    """(standstill, v_ego_kph) from the car, or (None, None) if it cannot be read."""
+    try:
+        from cereal import messaging
+        sm = messaging.SubMaster(["carState"])
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
+            sm.update(100)
+            if sm.updated["carState"]:
+                cs = sm["carState"]
+                return bool(cs.standstill), float(cs.vEgo) * 3.6
+    except Exception:
+        pass
+    return None, None
+
+
+def plus_blocked(button, standstill, v_kph, min_kph):
+    """Is this a "+" press at a standstill? Returns the explanation, or None to allow it.
+
+    A "+" press is only a set-speed step while the car is moving. At a standstill this car reads
+    SET+RES as resume, and when it cannot resume - no lead ahead, or its own brake holding it - its
+    ACC aborts: CRUISE_STATE Failure(8) -> StandBy. That is the "I press ACC+ and it disengages"
+    report, measured on the car: three app presses at a standstill, each followed by a drop
+    0.1-3.6 s later (rlog, 2026-10-07 04:56). The "set" (decrease) side is deliberately left alone.
+    """
+    if button not in ("step", "res"):
+        return None
+    if standstill:
+        return "the car is at a standstill, where ACC+ means resume and this car aborts its own ACC"
+    if isinstance(v_kph, float) and v_kph < min_kph:
+        return "%.0f km/h is below the %.0f km/h floor, where ACC+ means resume/cancel" % (v_kph, min_kph)
+    return None
+
+
 def state_line():
     """One line describing what the car says about ACC right now."""
     avail, enabled, extra = acc_state()
@@ -161,6 +212,23 @@ def press(button, dry_run=False, settle_s=1.2, frames=None):
         # switched on. Switched-on-but-idle and engaged behave differently on this car anyway - the "+"
         # pattern is resume/cancel at a standstill.
         return False, "refused: ACC is switched on but not engaged (set=%s kph)" % _kph(extra)
+
+    # "Engaged" is not enough on its own: this port reports enabled=True for CRUISE_STATE in (3, 5, 6, 7),
+    # and 6/7 are the standstill states. A "+" there is resume, not a set-speed step, and this car aborts
+    # its own ACC when that resume cannot happen. See plus_blocked for the measurement behind this.
+    plus_min = plus_min_kph()
+    standstill, v_kph = car_motion()
+    if standstill is None:
+        return False, "refused: could not read the car's motion state"
+    reason = plus_blocked(button, standstill, v_kph, plus_min)
+    if reason:
+        audit({"button": button, "request": False, "refused": "standstill_plus",
+               "acc_available": avail, "acc_enabled": enabled,
+               "set_speed_kph": extra if isinstance(extra, float) else None,
+               "v_kph": v_kph if isinstance(v_kph, float) else None,
+               "standstill": standstill})
+        return False, "refused: %s (button=%s, v=%s, floor=%.0f km/h)" % (
+            reason, button, _kph(v_kph), plus_min)
 
     if dry_run:
         return True, "dry run: would request %s (%s) | ACC available=%s enabled=%s set=%s kph" % (

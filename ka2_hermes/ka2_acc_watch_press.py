@@ -37,7 +37,7 @@ def read_set_speed(timeout_s=1.0):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--button", default="res", choices=sorted(("res", "set", "cancel", "inc_dist", "dec_dist")))
+    ap.add_argument("--button", default="res", choices=sorted(("res", "set", "step", "cancel", "inc_dist", "dec_dist")))
     ap.add_argument("--delay", type=float, default=6.0, help="seconds to watch before pressing")
     ap.add_argument("--watch", type=float, default=16.0, help="total seconds to watch")
     a = ap.parse_args()
