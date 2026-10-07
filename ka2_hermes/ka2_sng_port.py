@@ -213,9 +213,13 @@ EDITS = [
   # the adaptation: their idle-frame capture hooks the newer update(can_packets) API, which this fork does
   # not have. card.py already rebuilds the CAN list every frame for the car state, and it is where the
   # button counter is followed, so the idle 0x3B0 frame is captured here - carried on CS so the car
-  # controller (which owns CS) can clone it. The counter block itself had been wiped off the box by an
-  # updater git reset and is not in hermes_ka2_patch.sh, so it is restored here too: without it every press
-  # sends counter 1, which is what made presses drop ~1 in 4-8.
+  # controller (which owns CS) can clone it.
+  #
+  # The shape matters and is easy to get wrong: card's can_list is [(logMonoTime, [(addr, dat, src), ...])]
+  # - a list of BATCHES of plain tuples, not flat CanData objects. A block keyed on CanData attributes
+  # matches nothing at all and the try/except below hides it, which is exactly what happened to the first
+  # version of this block (the counter continuation never ran, so every press sent counter 1). Verified
+  # against the live bus: 60 src-0 idle frames in 3 s, counter rolling 6,7,8..15,0,1.
   ("selfdrive/car/card.py",
    "    can_list = can_capnp_to_list(can_strs)\n\n",
    "    can_list = can_capnp_to_list(can_strs)\n"
@@ -223,18 +227,21 @@ EDITS = [
    "    # Track the car's own 0x3B0 button counter (byte 6 high nibble, src 0 = the car's module) so a press\n"
    "    # we inject continues its sequence instead of restarting at zero. Restarting is the last structural\n"
    "    # difference between the car's own rocker - which never disengages - and our presses, which drop it.\n"
-   "    # can_list is flat here (CanData entries) but tolerate a nested list too, and never let this\n"
-   "    # scan become fatal: an exception in card takes the whole car daemon down (it did, 6 Oct 2026).\n"
+   "    # can_list is a list of (logMonoTime, [(addr, dat, src), ...]) batches; tolerate a flat list too, and\n"
+   "    # never let this scan become fatal: an exception in card takes the whole car daemon down (6 Oct 2026).\n"
    "    try:\n"
-   "      for _entry in can_list:\n"
-   "        _cands = (_entry,) if hasattr(_entry, \"address\") else _entry\n"
-   "        for _g in _cands:\n"
-   "          if getattr(_g, \"address\", None) == 0x3B0 and getattr(_g, \"src\", None) == 0:\n"
-   "            _dat = getattr(_g, \"dat\", None)\n"
-   "            if _dat is not None and len(_dat) > 6:\n"
-   "              self.acc_button_state[\"car_counter\"] = (_dat[6] >> 4) & 0x0F\n"
-   "              if not _dat[0] & 0x18:      # no SET/RES bit set = the car's idle frame\n"
-   "                self.CI.CS.sng_pcm_idle = bytes(_dat)   # SNG clones this frame\n"
+   "      for _batch in can_list:\n"
+   "        _frames = (_batch[1] if (isinstance(_batch, (tuple, list)) and len(_batch) == 2\n"
+   "                                 and isinstance(_batch[1], (list, tuple))) else [_batch])\n"
+   "        for _f in _frames:\n"
+   "          try:\n"
+   "            _addr, _dat, _src = _f[0], bytes(_f[1]), _f[2]\n"
+   "          except Exception:\n"
+   "            continue        # one malformed entry skips itself; it must not end the scan\n"
+   "          if _addr == 0x3B0 and _src == 0 and len(_dat) > 6:\n"
+   "            self.acc_button_state[\"car_counter\"] = (_dat[6] >> 4) & 0x0F\n"
+   "            if not _dat[0] & 0x18:      # no SET/RES bit set = the car's idle frame\n"
+   "              self.CI.CS.sng_pcm_idle = _dat   # SNG clones this frame\n"
    "    except Exception:\n"
    "      pass\n"
    "\n"),
