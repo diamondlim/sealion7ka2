@@ -120,4 +120,23 @@ if [ -f "$CONTROLSD" ]; then
     || python3 /data/hermes/patches/patch_bias.py "$CONTROLSD" || true
 fi
 
+# --- SNG (queue resume) plus the card-side counter continuation it depends on. Ported from
+# kommuai/opendbc@8519177e; the port script validates every anchor before writing any file, so a
+# half-applied tree is never left behind, and its marker check makes a re-run a no-op.
+# Two markers, because they are lost separately: sng_helper.py is a new file the reset deletes outright,
+# and the counter block lives inside card.py (which is how it went missing before - the box ran a 375-line
+# card against the mirror's 391 and every press sent counter 1, silently).
+SNG_HELPER=/data/openpilot/opendbc_repo/opendbc/car/sng_helper.py
+CARD=/data/openpilot/selfdrive/car/card.py
+if [ ! -f "$SNG_HELPER" ] || ! grep -q 'sng_pcm_idle' "$CARD"; then
+  if ! python3 /data/hermes/ka2_sng_port.py --apply --backup-dir /data/hermes/backups; then
+    # Loud on purpose: without these the SNG does nothing and presses fall back to counter 1, and both
+    # failures are silent at runtime. Recorded as well as printed, since the boot's stdout is long gone
+    # by the time anyone looks.
+    echo "  SNG PORT FAILED: the tree no longer matches the port's anchors - NOT applied" >&2
+    echo "$(date -u +%FT%TZ) sng port failed (tree moved - check ka2_sng_port.py --check)" \
+      >> /data/hermes/sng_port_failures.log 2>/dev/null || true
+  fi
+fi
+
 exit 0
