@@ -117,6 +117,77 @@ TUNING_TITLES = {
                              "leaves it less authority to hold the position."),
   # --- the vision -> stock-ACC bridge. These are read by the bridge tool, not by controlsd; it re-reads
   #     the same tuning file about once a second.
+  "VIS_TURN_ACC_MIN_SETPOINT_KMH": ("Auto-slow floor (km/h)",
+                                    "The bridge slows the car for a bend it sees by stepping the ACC "
+                                    "setpoint down 5 km/h at a time. It will never step below this, so "
+                                    "this is the floor of the automatic slowing. Can only be raised."),
+  "VIS_TURN_ACC_MAX_RESTORE_KMH": ("Auto-raise ceiling (km/h)",
+                                   "After the bend the bridge hands the speed back - never above the "
+                                   "setpoint you had set yourself, and never above this. Can only be "
+                                   "lowered."),
+  "VIS_TURN_ACC_MAX_STEPS": ("Max auto-slow steps per bend",
+                             "How many 5 km/h steps the bridge may take off the ACC setpoint for one "
+                             "bend: 3 = up to 15 km/h, 6 = up to 30 km/h. It still stops at the "
+                             "auto-slow floor and only gives speed back up to the setpoint you set "
+                             "yourself."),
+  "VIS_TURN_ACC_RESTORE": ("Hand the speed back after a bend (on/off)",
+                           "1 = once the bend is behind you the bridge steps the setpoint back up - never "
+                           "above the setpoint you set yourself. 0 = it only ever slows; you raise the "
+                           "speed again yourself. Lower only."),
+  "VIS_TURN_ACC_A_LAT": ("Bend comfort (m/s2 lateral)",
+                         "How much cornering force the model allows: the comfort speed is "
+                         "sqrt(A_LAT / curvature). Lower means slower and more cautious through bends, "
+                         "higher lets the car carry more speed. Raise only."),
+  "VIS_TURN_ACC_TRIGGER_S": ("Start slowing this long before a bend (s)",
+                             "Seconds before the bend entry at which the first step is taken. Longer "
+                             "starts the slowing earlier and more gradually. Moves either way."),
+  "VIS_TURN_ACC_LOOKAHEAD_MAX": ("How far ahead to look for bends (m)",
+                                 "How much of the model's path is scanned for a bend. Moves either way; "
+                                 "the trigger above decides when to act on it."),
+  "VIS_TURN_ACC_MIN_RADIUS": ("Ignore bends gentler than this radius (m)",
+                              "Bends wider than this produce no automatic slowing at all. Raise it to "
+                              "leave gentle highway curves alone. Raise only."),
+  "VIS_TURN_ACC_MIN_V_KMH": ("Don't auto-slow below this speed (km/h)",
+                             "Below this speed bends are left to you - useful in town. Raise only."),
+  "VIS_TURN_ACC_MARGIN_KMH": ("Only slow if the bend needs this much less (km/h)",
+                              "The model's comfort speed must be at least this far below your setpoint "
+                              "before a step is taken. Raise it to stop small nuisance steps. Raise only."),
+  "VIS_TURN_ACC_RESTORE_MARGIN_KMH": ("Speed-back headroom (km/h)",
+                                      "How much faster the road must allow before a step back up is taken. "
+                                      "Raise only."),
+  "VIS_LEAD_ACC_ENABLED": ("Slow for a car ahead (on/off)",
+                          "1 = the bridge may lower the ACC setpoint for a car the camera model sees "
+                          "ahead, before the car's own ACC has resolved it - so the slowing starts "
+                          "sooner and more gently. It only ever lowers; the ACC still does the "
+                          "following. 0 = off."),
+  "VIS_LEAD_ACC_LOOKAHEAD_M": ("How far ahead a car is acted on (m)",
+                               "A car further ahead than this is ignored, so the bridge cannot slow you "
+                               "for distant traffic."),
+  "VIS_LEAD_ACC_MARGIN_KMH": ("Aim this much faster than the car ahead (km/h)",
+                              "The setpoint is walked down toward the lead car's own speed plus this "
+                              "margin, never below the auto-slow floor."),
+  "VIS_LEAD_ACC_MIN_PROB": ("Confidence before a car counts as your lead",
+                            "How sure the camera model must be (0-1) before a car ahead is acted on. "
+                            "Raise it if a shadow or an oncoming vehicle ever causes an unnecessary "
+                            "slow-down."),
+  "VIS_LEAD_ACC_MAX_STEPS": ("Max steps per car ahead",
+                             "How many 5 km/h steps may be taken off the setpoint for one car ahead: "
+                             "4 = up to 20 km/h. The budget re-arms once that car is no longer in "
+                             "front of you. The auto-slow floor still binds."),
+  "VIS_TURN_ACC_COOLDOWN_S": ("Seconds between auto-slow steps",
+                              "How long the bridge waits before taking the next 5 km/h step off the ACC "
+                              "setpoint. Longer only: 2.5 s is the fastest cadence the car tolerates, and "
+                              "stretching it makes the slowing gentler and easier to follow. The handback "
+                              "cadence below is set separately."),
+  "VIS_TURN_ACC_UP_INTERVAL_S": ("Seconds between auto speed increase steps",
+                                 "How long the bridge waits between the + steps that hand the speed back "
+                                 "after a bend: 1 s means a 5 km/h step a second while the road stays "
+                                 "clear. It never raises above the setpoint you set yourself, and it does "
+                                 "not change the auto-slow cadence above."),
+  "VIS_TURN_ACC_ENABLED": ("Auto-slow for bends (on/off)",
+                           "1 = the bridge may step the ACC setpoint down for a bend the model sees "
+                           "ahead, and hand it back afterwards. 0 = off. Re-read from the tuning file "
+                           "about once a second, so it applies without a restart."),
 }
 # The step each knob moves by when the phone offers +/- buttons rather than a text field, chosen so
 # a useful change is a few presses: 0.05 on a 0-1 gain, 0.5 m/s on the 5-20 m/s speed floor, and a
@@ -161,9 +232,25 @@ TUNING_STEPS = {
 VISION_ACC_TOOL = os.environ.get("KA2_VISION_ACC_TOOL", "/data/hermes/ka2_vision_acc.py")
 TUNING_SOURCES = (
   {"path": CONTROLD, "keys": {k: k for k in TUNING_TITLES if k.startswith("LANE_")}},
-  # The vision-acc bridge (VIS_*) source was removed on 7 Oct 2026: the bridge, ka2-vision-acc,
-  # is stopped and disabled, so all 19 of its rows wrote to a config nothing read. Putting the
-  # source back is all that is needed to offer them again, once TUNING_TITLES carries their wording.
+  {"path": VISION_ACC_TOOL, "keys": {"VIS_TURN_ACC_MIN_SETPOINT_KMH": "MIN_SETPOINT_KMH",
+                                     "VIS_TURN_ACC_MAX_RESTORE_KMH": "MAX_RESTORE_KMH",
+                                     "VIS_TURN_ACC_MAX_STEPS": "MAX_STEPS",
+                                     "VIS_TURN_ACC_COOLDOWN_S": "COOLDOWN_S",
+                                     "VIS_TURN_ACC_UP_INTERVAL_S": "UP_INTERVAL_S",
+                                     "VIS_TURN_ACC_RESTORE": "RESTORE",
+                                     "VIS_TURN_ACC_A_LAT": "A_LAT",
+                                     "VIS_TURN_ACC_TRIGGER_S": "TRIGGER_S",
+                                     "VIS_TURN_ACC_LOOKAHEAD_MAX": "LOOKAHEAD_MAX",
+                                     "VIS_TURN_ACC_MIN_RADIUS": "MIN_RADIUS",
+                                     "VIS_TURN_ACC_MIN_V_KMH": "MIN_V_KMH",
+                                     "VIS_TURN_ACC_MARGIN_KMH": "MARGIN_KMH",
+                                     "VIS_TURN_ACC_RESTORE_MARGIN_KMH": "RESTORE_MARGIN_KMH",
+                                     "VIS_LEAD_ACC_ENABLED": "LEAD_ENABLED",
+                                     "VIS_LEAD_ACC_LOOKAHEAD_M": "LEAD_LOOKAHEAD_M",
+                                     "VIS_LEAD_ACC_MARGIN_KMH": "LEAD_MARGIN_KMH",
+                                     "VIS_LEAD_ACC_MIN_PROB": "LEAD_MIN_PROB",
+                                     "VIS_LEAD_ACC_MAX_STEPS": "LEAD_MAX_STEPS",
+                                     "VIS_TURN_ACC_ENABLED": "ENABLED"}},
 )
 _TUNING_CACHE = {"at": 0.0, "limits": {}, "bases": {}, "supported": set()}
 
@@ -357,6 +444,10 @@ KEYS = [
    "lock_key": "RecordFrontLock",
    "title": "Record and Upload Driver Camera", "desc": "Upload driver-facing camera data to help "
            "improve the driver monitoring algorithm."},
+  {"k": "ExperimentalMode", "type": "bool", "mode": "inert", "sec": "sw", "default": "0",
+   "title": "Experimental Mode",
+   "desc": "Not offered: selfdrived deletes this key on every start for this car, because the "
+           "Sealion 7 has no openpilot longitudinal control. A write cannot hold."},
   # --- a control that is real, but whose value lives in the car's code, not a param -----
   {"k": "LongitudinalPersonality", "type": "enum", "mode": "live", "sec": "sw", "default": "1",
    "opts": ["Aggressive", "Standard", "Relaxed"],
