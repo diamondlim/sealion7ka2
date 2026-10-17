@@ -263,7 +263,7 @@ def main() -> NoReturn:
 
   pm = messaging.PubMaster(['liveCalibration'])
   sm = messaging.SubMaster(['cameraOdometry', 'carState'], poll='cameraOdometry')
-  # carState is read non-blockingly in a polled reader and looks ~2 Hz, which
+  # KA2/hermes: carState is read non-blockingly in a polled reader and looks ~2 Hz, which
   # fails the alive/avg-freq checks and poisons the validity flags downstream.
   sm.ignore_average_freq.append('carState')
   sm.ignore_alive.append('carState')
