@@ -81,6 +81,12 @@ LANE_CORRECTION_DECOUPLE = 1.0
 # the lane centre, negative to the left. It is added to the correction's target, so unlike the model's own
 # path skew (DrivePathOffset, read once at modeld startup) it can be trimmed while driving.
 LANE_CORRECTION_BIAS_M = 0.0
+# Curve-only bias: sit this far away from the inside line of a bend, so a right-hander is taken a little
+# left of centre and a left-hander a little right. Scaled in with how tight the bend is, so a straight road
+# keeps the plain bias and a gentle sweep gets only part of it.
+LANE_CORRECTION_CURVE_BIAS_M = 0.10
+LANE_CORRECTION_CURVE_BIAS_MIN_CURV = 5.0e-4      # 1/2000 m: no bias below this
+LANE_CORRECTION_CURVE_BIAS_FULL_CURV = 1.7e-3     # 1/600 m: full bias above this
 
 # Memory and shaping for the lane geometry. Lane lines are noisy frame to frame — worse at
 # night — so the offset is low-passed rather than used raw. The first attempt used a sliding
@@ -127,6 +133,7 @@ TUNING_LIMITS = {
   "LANE_MEMORY_MAX_YAW_RATE": (0.0, 0.15),            # trust the held offset in less curvature
   "LANE_CORRECTION_DECOUPLE": (0.0, 1.0),             # 0.0 = plain pursuit, no lane-curvature cancellation
   "LANE_CORRECTION_BIAS_M": (-0.30, 0.30),            # where to sit in the lane; two-sided by nature
+  "LANE_CORRECTION_CURVE_BIAS_M": (0.0, 0.30),        # away from the inside line in a bend; 0.0 = off
 }
 TUNING_BASE = {name: globals()[name] for name in TUNING_LIMITS}
 _LANE_TUNING_LAST = None             # the tuning dict as last logged, so a change appears once in the journal
@@ -224,7 +231,19 @@ def lane_centre_offset(model_v2, v_ego, decouple=None):
   # geometry rather than the instruction. It costs budget in proportion to its size (~0.27 m/s^2 at the
   # 0.30 m limit, independent of speed because the lookahead grows with speed), so a large bias leaves the
   # correction less authority to hold the offset it is asking for.
-  return centre_offset + LANE_CORRECTION_BIAS_M
+  lane_inset = 0.0
+  if LANE_CORRECTION_CURVE_BIAS_M > 0.0:
+    y2l = y_at(lines[1], 2.0 * lookahead) if probs[1] >= LANE_CORRECTION_MIN_PROB else None
+    y2r = y_at(lines[2], 2.0 * lookahead) if probs[2] >= LANE_CORRECTION_MIN_PROB else None
+    if y2l is not None and y2r is not None and 1.5 <= (y2r - y2l) <= 6.0:
+      # Lane centre at 2L -> curvature (+ = the road bends right)
+      kappa = 0.5 * (y2l + y2r) / (2.0 * lookahead ** 2)
+      span = LANE_CORRECTION_CURVE_BIAS_FULL_CURV - LANE_CORRECTION_CURVE_BIAS_MIN_CURV
+      tight = (abs(kappa) - LANE_CORRECTION_CURVE_BIAS_MIN_CURV) / span if span > 0.0 else 0.0
+      if tight > 0.0:
+        lane_inset = -LANE_CORRECTION_CURVE_BIAS_M * math.copysign(min(1.0, tight), kappa)
+
+  return centre_offset + LANE_CORRECTION_BIAS_M + lane_inset
 
 
 def lane_curvature_from_offset(centre_offset, v_ego, lookahead):
