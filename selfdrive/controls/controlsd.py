@@ -86,7 +86,7 @@ LANE_CORRECTION_BIAS_M = 0.0
 # keeps the plain bias and a gentle sweep gets only part of it.
 LANE_CORRECTION_CURVE_BIAS_M = 0.10
 LANE_CORRECTION_CURVE_BIAS_MIN_CURV = 5.0e-4      # 1/2000 m: no bias below this
-LANE_CORRECTION_CURVE_BIAS_FULL_CURV = 1.7e-3     # 1/600 m: full bias above this
+LANE_CORRECTION_CURVE_BIAS_FULL_CURV = 1.2e-3     # 1/600 m: full bias above this
 
 # Memory and shaping for the lane geometry. Lane lines are noisy frame to frame — worse at
 # night — so the offset is low-passed rather than used raw. The first attempt used a sliding
@@ -125,7 +125,7 @@ TUNING_LIMITS = {
   "LANE_CORRECTION_LOOKAHEAD_S": (1.5, 3.0),          # further ahead = gentler
   "LANE_CORRECTION_MIN_PROB": (0.5, 0.99),            # stricter lane-line confidence
   "LANE_CORRECTION_MAX_OFFSET_M": (0.2, 1.5),         # stricter plausibility bound
-  "LANE_CORRECTION_MAX_LAT_ACC": (0.0, 0.3),          # the shipped budget is the ceiling
+  "LANE_CORRECTION_MAX_LAT_ACC": (0.0, 0.45),          # the shipped budget is the ceiling
   "LANE_CORRECTION_MIN_SPEED": (5.0, 20.0),           # raise the speed the correction acts at
   "LANE_CORRECTION_FILTER_TAU_S": (0.5, 2.0),         # more smoothing
   "LANE_CORRECTION_MAX_ACC_RATE": (0.0, 0.9),         # slower changes; 0.0 = unlimited
