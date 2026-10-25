@@ -133,7 +133,7 @@ TUNING_LIMITS = {
   "LANE_MEMORY_MAX_YAW_RATE": (0.0, 0.15),            # trust the held offset in less curvature
   "LANE_CORRECTION_DECOUPLE": (0.0, 1.0),             # 0.0 = plain pursuit, no lane-curvature cancellation
   "LANE_CORRECTION_BIAS_M": (-0.30, 0.30),            # where to sit in the lane; two-sided by nature
-  "LANE_CORRECTION_CURVE_BIAS_M": (0.0, 0.30),        # away from the inside line in a bend; 0.0 = off
+  "LANE_CORRECTION_CURVE_BIAS_M": (0.0, 0.45),        # away from the inside line in a bend; 0.0 = off
 }
 TUNING_BASE = {name: globals()[name] for name in TUNING_LIMITS}
 _LANE_TUNING_LAST = None             # the tuning dict as last logged, so a change appears once in the journal
