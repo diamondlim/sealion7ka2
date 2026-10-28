@@ -443,7 +443,8 @@ def read_key(key):
 
 
 try:                                    # Wi-Fi lives in its own module; a missing copy is not fatal
-  from wifi_control import redact as wifi_redact, wifi_reply as _wifi_reply
+  from wifi_control import (redact as wifi_redact, wifi_reply as _wifi_reply,
+                           hotspot_reply as _hotspot_reply, uplink_reply as _uplink_reply)
   WIFI_AVAILABLE = True
 except Exception as _wifi_exc:          # pragma: no cover - only on a bad deploy
   WIFI_AVAILABLE = False
@@ -452,8 +453,14 @@ except Exception as _wifi_exc:          # pragma: no cover - only on a bad deplo
   def wifi_redact(line):
     return line
 
-  def _wifi_reply(command, payload):
+  def _wifi_reply(command, payload, ip_of=None):
     return ["ERR WIFI control unavailable on the box (%s)" % _WIFI_ERROR]
+
+  def _hotspot_reply(command, payload=None, ip_of=None):
+    return ["ERR HOTSPOT control unavailable on the box (%s)" % _WIFI_ERROR]
+
+  def _uplink_reply(command, payload=None, ip_of=None):
+    return ["ERR UPLINK control unavailable on the box (%s)" % _WIFI_ERROR]
 
 
 def car_state():
@@ -997,7 +1004,8 @@ def handle(line):
   cmd = parts[0].upper()
   if cmd == "HELP":
     return ["OK commands: INFO | SCHEMA | LIST | GET <Key> | SET <Key> <value> | ACT <NAME> | "
-            "POSE 0|1 | VER <client> | HELP"]
+            "POSE 0|1 | WIFI STATUS|LIST|CONNECT|FORGET | HOTSPOT ON|OFF|STATUS | "
+            "UPLINK SIM|WIFI|STATUS | VER <client> | HELP"]
   if cmd == "WIFI":
     # The payload is everything after the subcommand, unsplit: a password may contain spaces.
     pieces = line.split(None, 2)
@@ -1011,6 +1019,20 @@ def handle(line):
     if not WIFI_AVAILABLE:
       return _wifi_reply(sub, payload)
     return _wifi_reply(sub, payload, _ip_of)
+  if cmd == "HOTSPOT":
+    sub = parts[1].upper() if len(parts) > 1 else "STATUS"
+    return _hotspot_reply(sub, None, _ip_of)
+  if cmd == "UPLINK":
+    # Like WIFI: the payload is the rest of the line, unsplit, so a password may contain spaces.
+    pieces = line.split(None, 2)
+    sub = pieces[1].upper() if len(pieces) > 1 else "STATUS"
+    payload = None
+    if len(pieces) > 2:
+      try:
+        payload = json.loads(pieces[2])
+      except Exception:
+        return ["ERR UPLINK bad-json-payload"]
+    return _uplink_reply(sub, payload, _ip_of)
   if cmd.startswith("DRIVES"):
     return _log_command(cmd)
 
