@@ -55,6 +55,7 @@ except ImportError:                    # ...so --selftest stays runnable off the
 PARAMS = os.environ.get("KA2_PARAMS_DIR", "/data/params/d")
 AUDIT = os.environ.get("KA2_AUDIT", "/data/hermes/bt_audit.log")
 POSE_PATH = os.environ.get("KA2_POSE_PATH", "/dev/shm/ka2_pose.json")
+GPS_PATH = os.environ.get("KA2_GPS_PATH", "/dev/shm/ka2_gps.json")
 TUNING_PATH = os.environ.get("KA2_TUNING_PATH", "/data/hermes/tuning.json")
 CONTROLD = os.environ.get("KA2_CONTROLD", "/data/openpilot/selfdrive/controls/controlsd.py")
 MEDIA = "/data/media"
@@ -62,6 +63,9 @@ SPP_UUID = "00001101-0000-1000-8000-00805F9B34FB"
 ADAPTER_PATH = "/org/bluez/hci0"
 TCP_HOST, TCP_PORT = "127.0.0.1", 9911      # loopback-only: a test path, not a second door
 POSE_HOT_S = 2.0                            # a pose older than this is reported as stale
+GPS_HOT_S = 15.0                            # the AT publisher normally writes every second, but one
+                                            # poll can block for several seconds on mmcli - a tighter
+                                            # threshold flagged a healthy publisher as stopped
 
 # The lane-correction knobs are not params: the car reads them from a JSON file that controlsd
 # re-reads about once a second. The ranges and the shipped defaults are parsed out of the *deployed*
@@ -95,10 +99,27 @@ TUNING_TITLES = {
                                    "0 means unlimited, as in the code."),
   "LANE_MEMORY_HOLD_S": ("Memory hold after a dropout (s)",
                          "Live tuning. How long a remembered offset survives losing the lane "
-                         "lines. Shorter only."),
+                         "lines. Capped at the fork’s engineered maximum; longer carries a stale offset further into a gap."),
   "LANE_MEMORY_MAX_YAW_RATE": ("Yaw-rate limit for a held offset (rad/s)",
                                "Live tuning. Above this curvature rate a remembered offset is "
                                "never trusted. Tighter only."),
+  "LANE_LEAD_FOLLOW_GAIN": ("Follow the lead car when the lines are gone (0-1)",
+                             "When the lane lines are unavailable, hold the position of the car ahead "
+                             "instead of giving up: 0 = the previous behaviour, 1 = follow its lateral "
+                             "offset fully (still bounded, and still only a fill-in for a missing lane)."),
+  "LANE_LEAD_MIN_PROB": ("Lead confidence needed",
+                          "How sure the model must be that the car ahead is really your lead before it "
+                          "may steer you. Stricter only."),
+  "LANE_LEAD_MAX_X_M": ("Furthest lead used (m)",
+                         "A lead further away than this is ignored: its lateral offset gets too noisy "
+                         "to steer by."),
+  "LANE_LEAD_MAX_OFFSET_M": ("Most it will chase the lead (m)",
+                              "Cap on the lateral offset taken from the lead, so a drifting car ahead "
+                              "cannot pull you out of your lane."),
+  "LANE_REACQUIRE_S": ("Re-acquisition ramp (s)",
+                       "Live tuning. After the lane lines return, the lane-centre offset fades "
+                       "back in over this time instead of stepping to the new value. 0 = instant, "
+                       "which is the old behaviour."),
   "LANE_CORRECTION_DECOUPLE": ("Work on the lane, not on the bend (0/1)",
                                "1 = the correction subtracts the lane's own curvature, so through a corner it "
                                "acts on where you sit in the lane instead of on the bend itself - it stops "
@@ -111,74 +132,11 @@ TUNING_TITLES = {
                              "this is read continuously, so it can be trimmed while driving, and the two add "
                              "up. The bias is spent from the correction's lateral budget, so a large one "
                              "leaves it less authority to hold the position."),
-  # --- the vision -> stock-ACC bridge. These are read by the bridge tool, not by controlsd; it re-reads
-  #     the same tuning file about once a second.
-  "VIS_TURN_ACC_MIN_SETPOINT_KMH": ("Auto-slow floor (km/h)",
-                                    "The bridge slows the car for a bend it sees by stepping the ACC "
-                                    "setpoint down 5 km/h at a time. It will never step below this, so "
-                                    "this is the floor of the automatic slowing. Can only be raised."),
-  "VIS_TURN_ACC_MAX_RESTORE_KMH": ("Auto-raise ceiling (km/h)",
-                                   "After the bend the bridge hands the speed back - never above the "
-                                   "setpoint you had set yourself, and never above this. Can only be "
-                                   "lowered."),
-  "VIS_TURN_ACC_MAX_STEPS": ("Max auto-slow steps per bend",
-                             "How many 5 km/h steps the bridge may take off the ACC setpoint for one "
-                             "bend: 3 = up to 15 km/h, 6 = up to 30 km/h. It still stops at the "
-                             "auto-slow floor and only gives speed back up to the setpoint you set "
-                             "yourself."),
-  "VIS_TURN_ACC_RESTORE": ("Hand the speed back after a bend (on/off)",
-                           "1 = once the bend is behind you the bridge steps the setpoint back up - never "
-                           "above the setpoint you set yourself. 0 = it only ever slows; you raise the "
-                           "speed again yourself. Lower only."),
-  "VIS_TURN_ACC_A_LAT": ("Bend comfort (m/s2 lateral)",
-                         "How much cornering force the model allows: the comfort speed is "
-                         "sqrt(A_LAT / curvature). Lower means slower and more cautious through bends, "
-                         "higher lets the car carry more speed. Raise only."),
-  "VIS_TURN_ACC_TRIGGER_S": ("Start slowing this long before a bend (s)",
-                             "Seconds before the bend entry at which the first step is taken. Longer "
-                             "starts the slowing earlier and more gradually. Moves either way."),
-  "VIS_TURN_ACC_LOOKAHEAD_MAX": ("How far ahead to look for bends (m)",
-                                 "How much of the model's path is scanned for a bend. Moves either way; "
-                                 "the trigger above decides when to act on it."),
-  "VIS_TURN_ACC_MIN_RADIUS": ("Ignore bends gentler than this radius (m)",
-                              "Bends wider than this produce no automatic slowing at all. Raise it to "
-                              "leave gentle highway curves alone. Raise only."),
-  "VIS_TURN_ACC_MIN_V_KMH": ("Don't auto-slow below this speed (km/h)",
-                             "Below this speed bends are left to you - useful in town. Raise only."),
-  "VIS_TURN_ACC_MARGIN_KMH": ("Only slow if the bend needs this much less (km/h)",
-                              "The model's comfort speed must be at least this far below your setpoint "
-                              "before a step is taken. Raise it to stop small nuisance steps. Raise only."),
-  "VIS_TURN_ACC_RESTORE_MARGIN_KMH": ("Speed-back headroom (km/h)",
-                                      "How much faster the road must allow before a step back up is taken. "
-                                      "Raise only."),
-  "VIS_LEAD_ACC_ENABLED": ("Slow for a car ahead (on/off)",
-                          "1 = the bridge may lower the ACC setpoint for a car the camera model sees "
-                          "ahead, before the car's own ACC has resolved it - so the slowing starts "
-                          "sooner and more gently. It only ever lowers; the ACC still does the "
-                          "following. 0 = off."),
-  "VIS_LEAD_ACC_LOOKAHEAD_M": ("How far ahead a car is acted on (m)",
-                               "A car further ahead than this is ignored, so the bridge cannot slow you "
-                               "for distant traffic."),
-  "VIS_LEAD_ACC_MARGIN_KMH": ("Aim this much faster than the car ahead (km/h)",
-                              "The setpoint is walked down toward the lead car's own speed plus this "
-                              "margin, never below the auto-slow floor."),
-  "VIS_LEAD_ACC_MIN_PROB": ("Confidence before a car counts as your lead",
-                            "How sure the camera model must be (0-1) before a car ahead is acted on. "
-                            "Raise it if a shadow or an oncoming vehicle ever causes an unnecessary "
-                            "slow-down."),
-  "VIS_LEAD_ACC_MAX_STEPS": ("Max steps per car ahead",
-                             "How many 5 km/h steps may be taken off the setpoint for one car ahead: "
-                             "4 = up to 20 km/h. The budget re-arms once that car is no longer in "
-                             "front of you. The auto-slow floor still binds."),
-  "VIS_TURN_ACC_COOLDOWN_S": ("Seconds between auto-slow steps",
-                              "How long the bridge waits before taking the next 5 km/h step off the ACC "
-                              "setpoint - and how long it waits between handing speed back. Longer "
-                              "only: 2.5 s is the fastest cadence the car tolerates, and stretching it "
-                              "makes the slowing gentler and easier to follow."),
-  "VIS_TURN_ACC_ENABLED": ("Auto-slow for bends (on/off)",
-                           "1 = the bridge may step the ACC setpoint down for a bend the model sees "
-                           "ahead, and hand it back afterwards. 0 = off. Re-read from the tuning file "
-                           "about once a second, so it applies without a restart."),
+  "LANE_CORRECTION_CURVE_BIAS_M": ("Curve bias, away from the inside line (m)",
+                                   "Live tuning. How far to sit from the inside line of a bend: to the left in a "
+                                   "right-hand bend, to the right in a left-hand bend. Fades in with how tight the "
+                                   "bend is, so a straight road and a gentle sweep keep the plain lane-centre "
+                                   "behaviour. 0 = no curve bias."),
 }
 # The step each knob moves by when the phone offers +/- buttons rather than a text field, chosen so
 # a useful change is a few presses: 0.05 on a 0-1 gain, 0.5 m/s on the 5-20 m/s speed floor, and a
@@ -195,51 +153,20 @@ TUNING_STEPS = {
   "LANE_CORRECTION_MAX_ACC_RATE": 0.1,
   "LANE_MEMORY_HOLD_S": 0.05,
   "LANE_MEMORY_MAX_YAW_RATE": 0.025,
+  "LANE_LEAD_FOLLOW_GAIN": 0.1,
+  "LANE_LEAD_MIN_PROB": 0.05,
+  "LANE_LEAD_MAX_X_M": 5.0,
+  "LANE_LEAD_MAX_OFFSET_M": 0.1,
+  "LANE_REACQUIRE_S": 0.25,
   "LANE_CORRECTION_DECOUPLE": 1.0,          # 0/1 toggle
   "LANE_CORRECTION_BIAS_M": 0.05,           # metres
-  "VIS_TURN_ACC_MIN_SETPOINT_KMH": 5.0,     # one press of the app's + moves the floor a whole ACC step
-  "VIS_TURN_ACC_MAX_RESTORE_KMH": 5.0,
-  "VIS_TURN_ACC_MAX_STEPS": 1.0,            # one step at a time: 3 -> 4 -> 5 -> 6
-  "VIS_TURN_ACC_RESTORE": 1.0,              # 0/1 toggle
-  "VIS_TURN_ACC_A_LAT": 0.1,                # m/s^2: 1.2 -> 1.3 -> ... on a 1.2-2.5 range
-  "VIS_TURN_ACC_TRIGGER_S": 0.5,            # half a second per press
-  "VIS_TURN_ACC_LOOKAHEAD_MAX": 10.0,       # 10 m per press on an 80-320 m range
-  "VIS_TURN_ACC_MIN_RADIUS": 25.0,          # 25 m of radius per press
-  "VIS_TURN_ACC_MIN_V_KMH": 5.0,            # one ACC step per press
-  "VIS_TURN_ACC_MARGIN_KMH": 1.0,
-  "VIS_TURN_ACC_RESTORE_MARGIN_KMH": 1.0,
-  "VIS_TURN_ACC_COOLDOWN_S": 0.5,           # half a second per press on a 2.5-15 s range
-  "VIS_LEAD_ACC_ENABLED": 1.0,              # 0/1 toggle
-  "VIS_LEAD_ACC_LOOKAHEAD_M": 10.0,         # 10 m per press on a 60-200 m range
-  "VIS_LEAD_ACC_MARGIN_KMH": 1.0,
-  "VIS_LEAD_ACC_MIN_PROB": 0.05,            # fine steps on a 0.3-0.9 confidence range
-  "VIS_LEAD_ACC_MAX_STEPS": 1.0,            # one step at a time
-  "VIS_TURN_ACC_ENABLED": 1.0,              # 0/1 toggle
+  "LANE_CORRECTION_CURVE_BIAS_M": 0.05,      # metres
 }
 # Where each live knob lives, and the name of the module-level constant carrying its shipped default.
 # controlsd names its constants after the keys; the bridge tool keeps shorter constant names, so its two
 # rows are mapped explicitly.
-VISION_ACC_TOOL = os.environ.get("KA2_VISION_ACC_TOOL", "/data/hermes/ka2_vision_acc.py")
 TUNING_SOURCES = (
   {"path": CONTROLD, "keys": {k: k for k in TUNING_TITLES if k.startswith("LANE_")}},
-  {"path": VISION_ACC_TOOL, "keys": {"VIS_TURN_ACC_MIN_SETPOINT_KMH": "MIN_SETPOINT_KMH",
-                                     "VIS_TURN_ACC_MAX_RESTORE_KMH": "MAX_RESTORE_KMH",
-                                     "VIS_TURN_ACC_MAX_STEPS": "MAX_STEPS",
-                                     "VIS_TURN_ACC_COOLDOWN_S": "COOLDOWN_S",
-                                     "VIS_TURN_ACC_RESTORE": "RESTORE",
-                                     "VIS_TURN_ACC_A_LAT": "A_LAT",
-                                     "VIS_TURN_ACC_TRIGGER_S": "TRIGGER_S",
-                                     "VIS_TURN_ACC_LOOKAHEAD_MAX": "LOOKAHEAD_MAX",
-                                     "VIS_TURN_ACC_MIN_RADIUS": "MIN_RADIUS",
-                                     "VIS_TURN_ACC_MIN_V_KMH": "MIN_V_KMH",
-                                     "VIS_TURN_ACC_MARGIN_KMH": "MARGIN_KMH",
-                                     "VIS_TURN_ACC_RESTORE_MARGIN_KMH": "RESTORE_MARGIN_KMH",
-                                     "VIS_LEAD_ACC_ENABLED": "LEAD_ENABLED",
-                                     "VIS_LEAD_ACC_LOOKAHEAD_M": "LEAD_LOOKAHEAD_M",
-                                     "VIS_LEAD_ACC_MARGIN_KMH": "LEAD_MARGIN_KMH",
-                                     "VIS_LEAD_ACC_MIN_PROB": "LEAD_MIN_PROB",
-                                     "VIS_LEAD_ACC_MAX_STEPS": "LEAD_MAX_STEPS",
-                                     "VIS_TURN_ACC_ENABLED": "ENABLED"}},
 )
 _TUNING_CACHE = {"at": 0.0, "limits": {}, "bases": {}, "supported": set()}
 
@@ -538,7 +465,8 @@ def read_key(key):
 
 
 try:                                    # Wi-Fi lives in its own module; a missing copy is not fatal
-  from wifi_control import redact as wifi_redact, wifi_reply as _wifi_reply
+  from wifi_control import (redact as wifi_redact, wifi_reply as _wifi_reply,
+                           hotspot_reply as _hotspot_reply, uplink_reply as _uplink_reply)
   WIFI_AVAILABLE = True
 except Exception as _wifi_exc:          # pragma: no cover - only on a bad deploy
   WIFI_AVAILABLE = False
@@ -547,8 +475,14 @@ except Exception as _wifi_exc:          # pragma: no cover - only on a bad deplo
   def wifi_redact(line):
     return line
 
-  def _wifi_reply(command, payload):
+  def _wifi_reply(command, payload, ip_of=None):
     return ["ERR WIFI control unavailable on the box (%s)" % _WIFI_ERROR]
+
+  def _hotspot_reply(command, payload=None, ip_of=None):
+    return ["ERR HOTSPOT control unavailable on the box (%s)" % _WIFI_ERROR]
+
+  def _uplink_reply(command, payload=None, ip_of=None):
+    return ["ERR UPLINK control unavailable on the box (%s)" % _WIFI_ERROR]
 
 
 def car_state():
@@ -879,6 +813,7 @@ def device_info():
   except Exception:
     pass
   pose = read_pose()
+  gps = read_gps()
   return {
     "dongle": read_or_default({"k": "DongleId"}),
     "serial": read_or_default({"k": "HardwareSerial"}),
@@ -893,6 +828,8 @@ def device_info():
     "metered": read_or_default({"k": "NetworkMetered", "default": "0"}),
     "free_gb": free_gb, "uptime_s": uptime,
     "pose": {"ok": pose.get("ok", 0), "why": pose.get("why", ""), "age": pose.get("age")},
+    "gps": {"ok": gps.get("ok", 0), "why": gps.get("why", ""), "age": gps.get("age"),
+            "sats": gps.get("sats"), "hdop": gps.get("hdop")},
   }
 
 
@@ -909,6 +846,30 @@ def read_pose():
     pose["ok"] = 0
     pose["why"] = "pose publisher stale (%.1fs)" % age
   return pose
+
+
+def read_gps():
+  """The newest GNSS state, with its own age, for the app's lane page.
+
+  Both publishers write the same file shape: a fix carries lat/lon/sats/hdop, no fix carries the
+  reason it has none. That reason is the point of the row - "11 of 14 satellites report signal" is a
+  different situation from a publisher that is not running at all, and the owner asked to see which.
+  """
+  try:
+    with open(GPS_PATH) as fh:
+      gps = json.load(fh)
+  except Exception as exc:
+    return {"ok": 0, "why": "GNSS publisher not running (%s)" % type(exc).__name__, "age": None}
+  age = round(time.time() - float(gps.get("at", 0.0)), 1)
+  out = {"ok": 1 if gps.get("ok") else 0, "age": age}
+  for key in ("lat", "lon", "alt", "speed_ms", "bearing", "sats", "hdop", "source", "why"):
+    if gps.get(key) is not None:
+      out[key] = gps[key]
+  if age > GPS_HOT_S:
+    out["ok"] = 0
+    out["stale"] = 1
+    out["why"] = "GNSS state is %.0f s old" % age
+  return out
 
 
 # --- the line protocol ----------------------------------------------------------------
@@ -1065,7 +1026,8 @@ def handle(line):
   cmd = parts[0].upper()
   if cmd == "HELP":
     return ["OK commands: INFO | SCHEMA | LIST | GET <Key> | SET <Key> <value> | ACT <NAME> | "
-            "POSE 0|1 | VER <client> | HELP"]
+            "POSE 0|1 | WIFI STATUS|LIST|CONNECT|FORGET | HOTSPOT ON|OFF|STATUS | "
+            "UPLINK SIM|WIFI|STATUS | VER <client> | HELP"]
   if cmd == "WIFI":
     # The payload is everything after the subcommand, unsplit: a password may contain spaces.
     pieces = line.split(None, 2)
@@ -1079,6 +1041,20 @@ def handle(line):
     if not WIFI_AVAILABLE:
       return _wifi_reply(sub, payload)
     return _wifi_reply(sub, payload, _ip_of)
+  if cmd == "HOTSPOT":
+    sub = parts[1].upper() if len(parts) > 1 else "STATUS"
+    return _hotspot_reply(sub, None, _ip_of)
+  if cmd == "UPLINK":
+    # Like WIFI: the payload is the rest of the line, unsplit, so a password may contain spaces.
+    pieces = line.split(None, 2)
+    sub = pieces[1].upper() if len(pieces) > 1 else "STATUS"
+    payload = None
+    if len(pieces) > 2:
+      try:
+        payload = json.loads(pieces[2])
+      except Exception:
+        return ["ERR UPLINK bad-json-payload"]
+    return _uplink_reply(sub, payload, _ip_of)
   if cmd.startswith("DRIVES"):
     return _log_command(cmd)
 
@@ -1155,8 +1131,10 @@ class Session:
 
   KEEPALIVE_S = 5.0       # an idle RFCOMM link is what phone Bluetooth stacks drop
   STATE_EVERY_S = 1.0     # how often the car's state is re-read and, if changed, pushed
-  READ_TIMEOUT_S = 0.1    # how long a read waits before the pose loop takes a turn
-  SEND_TIMEOUT_S = 5.0    # a write gets far longer: a Bluetooth link that is briefly busy must not
+  GPS_EVERY_S = 1.0       # GNSS state rides along with the lane stream this often: it changes at
+                          # about that rate, and it is what the lane page shows as its GPS row
+  READ_TIMEOUT_S = 0.2    # how long a read waits before the pose loop takes a turn
+  SEND_TIMEOUT_S = 20.0   # a write gets far longer: a Bluetooth link that is briefly busy must not
                           # kill the session, which is exactly what a 0.1 s write timeout did
 
   def __init__(self, sock, label):
@@ -1166,6 +1144,7 @@ class Session:
     self.buf = b""
     self.opening = 0        # how many of this session's commands have been logged
     self.sent_at = time.time()
+    self.gps_at = 0.0
     self.last_state = None
     self.state_at = 0.0
 
@@ -1203,6 +1182,9 @@ class Session:
           now = time.time()
           if self.pose:
             self.try_send_pose("P " + json.dumps(read_pose(), separators=(",", ":")))
+            if now - self.gps_at > self.GPS_EVERY_S:
+              self.gps_at = now
+              self.try_send_pose("G " + json.dumps(read_gps(), separators=(",", ":")))
           elif now - self.sent_at > self.KEEPALIVE_S:
             # Nothing to say for five seconds: say so anyway. A phone's Bluetooth stack treats a silent
             # RFCOMM link as dead and drops it, which showed up as connections that kept resetting.
@@ -1238,6 +1220,10 @@ class Session:
             arg = line.strip().split()[1] if len(line.strip().split()) > 1 else ""
             self.pose = arg.strip() in ("1", "on", "true")
             self.send_line("OK pose-%s" % ("on" if self.pose else "off"))
+            if self.pose:
+              # So the lane page has a GPS row from its first frame rather than up to a second later.
+              self.gps_at = time.time()
+              self.try_send_pose("G " + json.dumps(read_gps(), separators=(",", ":")))
             log("pose %s %s" % ("on" if self.pose else "off", self.label))
             continue
           for reply in handle(line):

@@ -24,17 +24,17 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from acc_decode import ACC_CMD_ADDRESS, decode_acc_cmd, frame_is_sane
 
 POSE_PATH = os.environ.get("KA2_POSE_PATH", "/dev/shm/ka2_pose.json")
-RATE_HZ = 10.0
+RATE_HZ = 5.0
 MAX_X = 50.0          # metres of road to send; the phone draws this window
-MAX_POINTS = 20       # per lane line, so the JSON line stays small
-NEAR_DENSE_M = 30.0   # keep every point this far out; thin beyond, where a few metres is invisible
-OUTER_POINTS = 8      # the neighbouring lanes' outer edges: context, so sent sparsely
+MAX_POINTS = 10       # per lane line, so the JSON line stays small
+NEAR_DENSE_M = 15.0   # keep every point this far out; thin beyond, where a few metres is invisible
+OUTER_POINTS = 5      # the neighbouring lanes' outer edges: context, so sent sparsely
 MIN_PROB = 0.5        # same threshold the car's own lane-centre correction uses
 # The route is a TEN SECOND horizon, not a distance: measured live, 33 points spanning 10.0 s. Stopped
 # that is 17 m, at 110 km/h it is 306 m. So this is a ceiling for the payload, not a judgement about
 # what is worth showing - the model's own reach is the limit, and the app draws wherever it ends.
 PATH_RANGE_M = 400.0   # how far ahead the model's own trajectory is worth drawing
-PATH_POINTS = 20      # and how many points of it travel over Bluetooth
+PATH_POINTS = 10      # and how many points of it travel over Bluetooth
 # The car's dashboard shows its own speed, and the fork says what that is: carstate sets
 # vEgoCluster = vEgo * HUD_MULTIPLIER (opendbc/car/byd/values.py, 1.12 on these cars). vEgo is the true
 # speed - wheel speed calibrated against GPS by wheelSpeedFactor - so the two differ by this factor on
@@ -167,9 +167,28 @@ class CarStateCache:
     self.acc = None               # the car's own ACC_CMD, newest sane frame
     self.acc_at = 0.0
 
+  def update_acc(self, payload, now):
+    """ACC_CMD from the car's own transmissions.
+
+    Kept out of the main SubMaster on purpose: `can` runs at roughly a thousand frames a second and,
+    sharing a poller with carState, it starved it - carState then read as 0 km/h for an entire drive
+    while the model frames kept coming. Isolated, a lagging `can` socket can only cost the ACC row.
+    """
+    for frame in getattr(payload, "can", payload):
+      if int(frame.address) != ACC_CMD_ADDRESS:
+        continue
+      dat = bytes(frame.dat)
+      if not frame_is_sane(dat):
+        continue
+      self.acc = decode_acc_cmd(dat)
+      self.acc_at = now
+
   def update(self, sm, now):
     # .get, not []: a service that was not subscribed must not raise here
-    if sm.updated.get("carState"):
+    # Read the latest carState every loop rather than only when the SubMaster flags it as newly
+    # updated: a publisher that attaches late (or after a stack restart) can sit with a stale view
+    # while the model frames keep arriving, which showed up as a permanent 0 km/h on the car page.
+    try:
       car = sm["carState"]
       self.v_ego = float(car.vEgo)
       # cruiseState.speedCluster is what the car's dashboard shows; cruiseState.speed is the fork's
@@ -177,8 +196,12 @@ class CarStateCache:
       # is the one the driver can check, so that is what the app is given as the set speed.
       self.set_speed = float(car.cruiseState.speedCluster)
       self.set_speed_true = float(car.cruiseState.speed)
-    if sm.updated.get("selfdriveState"):
+    except Exception as exc:
+      open("/tmp/ka2pose_err.log","a").write("carState: %r\n" % (exc,))
+    try:
       self.engaged = bool(sm["selfdriveState"].active)
+    except Exception:
+      pass
     if sm.updated.get("radarState"):
       leads = []
       for lead in (sm["radarState"].leadOne, sm["radarState"].leadTwo):
@@ -189,16 +212,6 @@ class CarStateCache:
       self.leads_at = now
     if self.leads and now - self.leads_at > self.LEAD_STALE_S:
       self.leads = []            # a lead that stopped being reported is gone, not frozen on screen
-    if sm.updated.get("can"):
-      payload = sm["can"]
-      for frame in getattr(payload, "can", payload):
-        if int(frame.address) != ACC_CMD_ADDRESS:
-          continue
-        dat = bytes(frame.dat)
-        if not frame_is_sane(dat):
-          continue               # not the frame we think it is: the DBC's constants did not match
-        self.acc = decode_acc_cmd(dat)
-        self.acc_at = now
     if self.acc is not None and now - self.acc_at > self.ACC_STALE_S:
       self.acc = None            # the car stopped saying: show nothing rather than an old request
     return self
@@ -371,8 +384,11 @@ def main():
   # `can` carries the car's own transmissions, including ACC_CMD - the message its ADAS module uses
   # to ask for acceleration or braking. Reading it is the whole point: it is what the car is doing on
   # its own, and it is the interface a longitudinal build would take over.
-  sm = messaging.SubMaster(["modelV2", "carState", "selfdriveState", "radarState", "can"],
-                           ignore_alive=ignored + ["can"])
+  def build_sm():
+    return messaging.SubMaster(["modelV2", "carState", "selfdriveState", "radarState"],
+                               ignore_alive=ignored)
+
+  sm = build_sm()
   print("publishing %s at %.0f Hz" % (POSE_PATH, RATE_HZ), flush=True)
   cache = CarStateCache()
   period = 1.0 / RATE_HZ
@@ -382,6 +398,12 @@ def main():
       sm.update(60)
       now = time.time()
       car = cache.update(sm, now)
+      try:
+        can_sm.update(10)
+        if can_sm.updated.get("can"):
+          cache.update_acc(can_sm["can"], now)
+      except Exception:
+        pass
       model_v2 = sm["modelV2"] if sm.updated["modelV2"] else None
       write_atomic(POSE_PATH, json.dumps(
           build_pose(model_v2, car.v_ego, car.engaged, now, car.set_speed, car.leads,
