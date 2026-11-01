@@ -101,6 +101,7 @@ LANE_CORRECTION_FILTER_TAU_S = 0.5   # s; first-order time constant (0.0 -> use 
 LANE_CORRECTION_MAX_ACC_RATE = 0.9   # m/s^2 per s; how fast the correction may change (0.0 -> unlimited)
 LANE_MEMORY_HOLD_S = 0.4             # how long a remembered offset survives a dropout
 LANE_MEMORY_MAX_YAW_RATE = 0.15      # rad/s; above this, never trust a stale offset
+LANE_REACQUIRE_S = 0.75             # s; ramp the offset back in after re-acquisition (0.0 -> instant)
 
 # Runtime tuning of everything above. The values are re-read about once a second from a small JSON
 # file, so a knob can be moved while driving and A/B'd without a redeploy or a branch per value.
@@ -131,6 +132,7 @@ TUNING_LIMITS = {
   "LANE_CORRECTION_MAX_ACC_RATE": (0.0, 0.9),         # slower changes; 0.0 = unlimited
   "LANE_MEMORY_HOLD_S": (0.0, 1.5),                   # hold a stale offset for less time
   "LANE_MEMORY_MAX_YAW_RATE": (0.0, 0.15),            # trust the held offset in less curvature
+  "LANE_REACQUIRE_S": (0.0, 2.0),                     # slower re-acquisition of the lane offset
   "LANE_CORRECTION_DECOUPLE": (0.0, 1.0),             # 0.0 = plain pursuit, no lane-curvature cancellation
   "LANE_CORRECTION_BIAS_M": (-0.30, 0.30),            # where to sit in the lane; two-sided by nature
   "LANE_CORRECTION_CURVE_BIAS_M": (0.0, 0.45),        # away from the inside line in a bend; 0.0 = off
@@ -282,9 +284,12 @@ class LaneCentreMemory:
   Offset sign follows lane_centre_offset (+ = lane centre is left of the car).
   """
 
-  def __init__(self, tau_s=LANE_CORRECTION_FILTER_TAU_S, hold_s=LANE_MEMORY_HOLD_S, dt=DT_CTRL):
+  def __init__(self, tau_s=LANE_CORRECTION_FILTER_TAU_S, hold_s=LANE_MEMORY_HOLD_S, reacquire_s=LANE_REACQUIRE_S, dt=DT_CTRL):
     self.alpha = 1.0 - math.exp(-dt / tau_s) if tau_s > 0.0 else 1.0
     self.hold_s = hold_s
+    self.reacquire_s = reacquire_s
+    self.dt = dt
+    self._w = 1.0
     self._value = None
     self._samples = 0
     self._last_good_t = None
@@ -294,6 +299,7 @@ class LaneCentreMemory:
     self._value = None
     self._samples = 0
     self._last_good_t = None
+    self._w = 1.0
 
   @property
   def samples(self):
@@ -306,15 +312,21 @@ class LaneCentreMemory:
     """
     offset = lane_centre_offset(model_v2, v_ego)
     if offset is not None:
-      self._value = offset if self._value is None else self._value + self.alpha * (offset - self._value)
+      if self._value is None:
+        self._value = offset
+        self._w = 0.0 if self.reacquire_s > 0.0 else 1.0
+      else:
+        self._value = self._value + self.alpha * (offset - self._value)
+        if self.reacquire_s > 0.0:
+          self._w = min(1.0, self._w + self.dt / self.reacquire_s)
       self._samples += 1
       self._last_good_t = now
-      return self._value
+      return self._value * self._w
 
     # Dropout: reuse the filtered value only briefly, and only while going straight.
     if (self._last_good_t is not None and (now - self._last_good_t) <= self.hold_s
         and abs(yaw_rate) <= LANE_MEMORY_MAX_YAW_RATE and self._value is not None):
-      return self._value
+      return self._value * self._w
 
     self.reset()
     return None
@@ -402,6 +414,7 @@ class Controls:
     tau = tuning.get("LANE_CORRECTION_FILTER_TAU_S", TUNING_BASE["LANE_CORRECTION_FILTER_TAU_S"])
     self.lane_centre.alpha = 1.0 - math.exp(-DT_CTRL / tau) if tau > 0.0 else 1.0
     self.lane_centre.hold_s = tuning.get("LANE_MEMORY_HOLD_S", TUNING_BASE["LANE_MEMORY_HOLD_S"])
+    self.lane_centre.reacquire_s = tuning.get("LANE_REACQUIRE_S", TUNING_BASE["LANE_REACQUIRE_S"])
     self.lane_slew.max_rate = tuning.get("LANE_CORRECTION_MAX_ACC_RATE",
                                          TUNING_BASE["LANE_CORRECTION_MAX_ACC_RATE"])
 

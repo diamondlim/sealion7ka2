@@ -103,6 +103,10 @@ TUNING_TITLES = {
   "LANE_MEMORY_MAX_YAW_RATE": ("Yaw-rate limit for a held offset (rad/s)",
                                "Live tuning. Above this curvature rate a remembered offset is "
                                "never trusted. Tighter only."),
+  "LANE_REACQUIRE_S": ("Re-acquisition ramp (s)",
+                       "Live tuning. After the lane lines return, the lane-centre offset fades "
+                       "back in over this time instead of stepping to the new value. 0 = instant, "
+                       "which is the old behaviour."),
   "LANE_CORRECTION_DECOUPLE": ("Work on the lane, not on the bend (0/1)",
                                "1 = the correction subtracts the lane's own curvature, so through a corner it "
                                "acts on where you sit in the lane instead of on the bend itself - it stops "
@@ -136,6 +140,7 @@ TUNING_STEPS = {
   "LANE_CORRECTION_MAX_ACC_RATE": 0.1,
   "LANE_MEMORY_HOLD_S": 0.05,
   "LANE_MEMORY_MAX_YAW_RATE": 0.025,
+  "LANE_REACQUIRE_S": 0.25,
   "LANE_CORRECTION_DECOUPLE": 1.0,          # 0/1 toggle
   "LANE_CORRECTION_BIAS_M": 0.05,           # metres
   "LANE_CORRECTION_CURVE_BIAS_M": 0.05,      # metres
