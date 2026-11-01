@@ -1133,7 +1133,7 @@ class Session:
   STATE_EVERY_S = 1.0     # how often the car's state is re-read and, if changed, pushed
   GPS_EVERY_S = 1.0       # GNSS state rides along with the lane stream this often: it changes at
                           # about that rate, and it is what the lane page shows as its GPS row
-  READ_TIMEOUT_S = 0.1    # how long a read waits before the pose loop takes a turn
+  READ_TIMEOUT_S = 0.2    # how long a read waits before the pose loop takes a turn
   SEND_TIMEOUT_S = 5.0    # a write gets far longer: a Bluetooth link that is briefly busy must not
                           # kill the session, which is exactly what a 0.1 s write timeout did
 
