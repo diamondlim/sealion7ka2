@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh gpsOneXTRA orbits at boot and weekly
+
+[Timer]
+OnBootSec=3min
+OnCalendar=Mon 03:00
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=basic.target

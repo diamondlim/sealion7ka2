@@ -1,0 +1,21 @@
+[Unit]
+Description=KA2 lane-pose publisher (Hermes)
+# No After=multi-user.target here, deliberately: this image never reaches multi-user.target
+# (gpio.service sits in "running" forever and holds the target's job open), so any unit ordered
+# after it stays "waiting" and never starts - systemctl start then blocks indefinitely.
+
+[Service]
+Type=simple
+# Runs as kommu, the user openpilot itself runs as: the modelV2/carState sockets under /dev/shm
+# are mode 0755 kommu-owned, so connecting needs to be the owner (a root systemd service gets
+# EACCES: "Messaging failure with modelV2: Permission denied"). Non-negotiable, not a preference.
+User=kommu
+Group=kommu
+WorkingDirectory=/data/openpilot
+Environment=PYTHONPATH=/data/openpilot
+ExecStart=/usr/local/venv/bin/python3 /data/hermes/ka2_pose_pub.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

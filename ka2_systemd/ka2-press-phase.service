@@ -1,0 +1,13 @@
+[Unit]
+Description=Hermes KA2 press-phase capture (read-only)
+After=kommu.service
+[Service]
+Type=simple
+User=kommu
+ExecStart=/usr/local/venv/bin/python3 /data/hermes/ka2_press_phase.py --hours 24
+Restart=always
+RestartSec=3
+StandardOutput=append:/data/hermes/acc/press_phase.log
+StandardError=append:/data/hermes/acc/press_phase.log
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,7 @@
+[Unit]
+Description=Refresh gpsOneXTRA predicted orbits in the modem's GNSS engine
+# No After=multi-user.target: this image never reaches it (gpio.service holds the target job open)
+[Service]
+Type=oneshot
+ExecStart=/data/hermes/ka2_xtra_refresh.sh
+

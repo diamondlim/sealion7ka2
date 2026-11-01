@@ -1,0 +1,12 @@
+[Unit]
+Description=KA2 hotspot post-boot fixup
+After=NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=oneshot
+ExecStart=/data/hermes/ka2_post_boot.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

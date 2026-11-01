@@ -1,0 +1,13 @@
+[Unit]
+Description=Hermes KA2 ACC incident capture (read-only, per-incident CAN window)
+After=kommu.service
+[Service]
+Type=simple
+User=kommu
+ExecStart=/usr/local/venv/bin/python3 /data/hermes/ka2_acc_incident_log2.py --hours 24
+Restart=always
+RestartSec=3
+StandardOutput=append:/data/hermes/acc/incidents.log
+StandardError=append:/data/hermes/acc/incidents.log
+[Install]
+WantedBy=multi-user.target

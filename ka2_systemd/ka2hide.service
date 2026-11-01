@@ -1,0 +1,20 @@
+[Unit]
+Description=Keep the KA2 box out of Bluetooth scans but still connectable (the app connects by address)
+After=bluetooth.service ka2bt.service
+PartOf=ka2bt.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+StandardInput=null
+# Registering the SPP profile is what makes BlueZ advertise the box, so hide it just after that.
+# BlueZ's Discoverable property drives the inquiry scan AND the page scan together, so turning it off
+# alone leaves the box unconnectable - which is not what "hidden" should mean. hciconfig sets the page
+# scan on its own (PSCAN without ISCAN): the box answers a connection from a known address and never
+# appears in a scan. btmgmt would do the same but sits waiting under systemd, so it is not used here.
+ExecStartPre=/bin/sleep 3
+ExecStart=-/usr/bin/timeout -k 2 6 /usr/bin/bluetoothctl discoverable off
+ExecStart=-/usr/bin/timeout -k 2 6 /usr/bin/hciconfig hci0 pscan
+
+[Install]
+WantedBy=multi-user.target

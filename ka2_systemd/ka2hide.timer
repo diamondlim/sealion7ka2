@@ -1,0 +1,10 @@
+[Unit]
+Description=Re-apply the KA2 box's hidden-but-connectable Bluetooth state
+
+[Timer]
+OnBootSec=30
+OnUnitActiveSec=120
+Unit=ka2hide.service
+
+[Install]
+WantedBy=timers.target

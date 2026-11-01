@@ -1,0 +1,20 @@
+[Unit]
+Description=KA2 modem GNSS (AT path) to gpsLocationExternal
+# No After= here, same as ka2pose.service: this image never reaches multi-user.target (gpio.service
+# holds the target job open), so a unit ordered after a target can stay waiting and never start.
+
+[Service]
+Type=simple
+# kommu, because the cereal sockets under /dev/shm are kommu-owned 0755 and a root service gets EACCES.
+User=kommu
+Group=kommu
+WorkingDirectory=/data/openpilot
+Environment=PYTHONPATH=/data/openpilot
+ExecStart=/usr/local/venv/bin/python3 /data/hermes/ka2_gnss_at_pub.py
+Restart=always
+RestartSec=10
+StandardOutput=append:/data/hermes/logs/ka2_gnss_at.log
+StandardError=append:/data/hermes/logs/ka2_gnss_at.log
+
+[Install]
+WantedBy=multi-user.target

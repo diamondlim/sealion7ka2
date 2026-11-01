@@ -42,14 +42,29 @@ def _segments(route_dir):
     return sorted(glob.glob(os.path.join(route_dir, "rlog.zst")))
 
 
-def _entry_from_speeds(name, seg_count, sp):
+def _newest_segment(route_dir):
+    """The newest segment to read, and which tier it came from.
+
+    The qlog is preferred: it carries the same carState at a tenth of the messages and a twentieth of
+    the bytes, which is the whole difference between a drives list that answers while you are looking at
+    it and one that takes half a minute. The rlog is the fallback for a segment whose qlog has not been
+    written (or was pruned) yet.
+    """
+    for name in ("qlog.zst", "rlog.zst"):
+        got = sorted(glob.glob(os.path.join(route_dir, name)))
+        if got:
+            return got[-1], name
+    return None, None
+
+
+def _entry_from_speeds(name, seg_count, sp, frame_scale=1):
     started = name.split("--")[0] + " " + name.split("--")[1].replace("-", ":")
     if not sp or statistics.median(sp) <= MIN_MEDIAN_SPEED_MS:
         return {"skip": True}
     return {
         "route": name,
         "started": started,
-        "frames": len(sp) * max(1, seg_count),
+        "frames": len(sp) * frame_scale * max(1, seg_count),
         "median_speed_ms": round(statistics.median(sp), 2),
         "max_speed_ms": round(max(sp), 2),
     }
@@ -58,7 +73,7 @@ def _entry_from_speeds(name, seg_count, sp):
 def list_drives(limit=8, max_scan=24):
     """Recent drives that moved, newest first.
 
-    Reading a route's rlog is the expensive part (a multi-megabyte decompress per route, ~15 s for a
+    Reading a route's log is the expensive part (a multi-megabyte decompress per route, ~15 s for a
     list of eight), so each route's entry is cached under a key that carries the last segment's size
     and mtime: a finished drive is computed once ever, and only the drive still being written is
     re-read on each call. Without this, every tap of the app's drives page cost the whole list again.
@@ -71,18 +86,20 @@ def list_drives(limit=8, max_scan=24):
     dirty = False
     out = []
     for d in sorted(glob.glob(os.path.join(REALDATA, "2026-*")), reverse=True)[:max_scan]:
-        segs = _segments(d)
-        if not segs:
+        seg, tier = _newest_segment(d)
+        if seg is None:
             continue
+        segs = _segments(d)
         name = os.path.basename(d)
         try:
-            st = os.stat(segs[-1])
-            key = "%s|%d|%d" % (name, st.st_size, int(st.st_mtime))
+            st = os.stat(seg)
+            key = "%s|%s|%d|%d" % (name, tier, st.st_size, int(st.st_mtime))
         except OSError:
             key = name
         entry = store.get(key)
         if entry is None:
-            entry = _entry_from_speeds(name, len(segs), _speeds(segs[-1]))
+            scale = 10 if tier == "qlog.zst" else 1
+            entry = _entry_from_speeds(name, len(segs), _speeds(seg), scale)
             store[key] = entry
             dirty = True
         if entry.get("skip"):
