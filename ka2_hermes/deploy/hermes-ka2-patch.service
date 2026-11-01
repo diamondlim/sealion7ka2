@@ -1,0 +1,11 @@
+[Unit]
+Description=Hermes KA2 patch (keep openpilot from wedging in selfdriveInitializing)
+After=local-fs.target
+Before=kommu.service
+[Service]
+Type=oneshot
+# No RemainAfterExit: a oneshot left "active (exited)" cannot be re-triggered by the timer, so the
+# timer would fire once and never schedule a next run. Ordering does not depend on it (Before=kommu.service).
+ExecStart=/usr/kommu/hermes_ka2_patch.sh
+[Install]
+WantedBy=multi-user.target

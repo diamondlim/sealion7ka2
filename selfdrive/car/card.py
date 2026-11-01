@@ -172,6 +172,27 @@ class Car:
     can_strs = messaging.drain_sock_raw(self.can_sock, wait_for_one=False)
     can_list = can_capnp_to_list(can_strs)
 
+    # Track the car's own 0x3B0 button counter (byte 6 high nibble, src 0 = the car's module) so a press
+    # we inject continues its sequence instead of restarting at zero. Restarting is the last structural
+    # difference between the car's own rocker - which never disengages - and our presses, which drop it.
+    # can_list is a list of (logMonoTime, [(addr, dat, src), ...]) batches; tolerate a flat list too, and
+    # never let this scan become fatal: an exception in card takes the whole car daemon down (6 Oct 2026).
+    try:
+      for _batch in can_list:
+        _frames = (_batch[1] if (isinstance(_batch, (tuple, list)) and len(_batch) == 2
+                                 and isinstance(_batch[1], (list, tuple))) else [_batch])
+        for _f in _frames:
+          try:
+            _addr, _dat, _src = _f[0], bytes(_f[1]), _f[2]
+          except Exception:
+            continue        # one malformed entry skips itself; it must not end the scan
+          if _addr == 0x3B0 and _src == 0 and len(_dat) > 6:
+            self.acc_button_state["car_counter"] = (_dat[6] >> 4) & 0x0F
+            if not _dat[0] & 0x18:      # no SET/RES bit set = the car's idle frame
+              self.CI.CS.sng_pcm_idle = _dat   # SNG clones this frame
+    except Exception:
+      pass
+
     # Update carState from CAN
     CS = self.CI.update(can_list)
 

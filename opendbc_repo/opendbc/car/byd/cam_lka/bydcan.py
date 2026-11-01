@@ -122,6 +122,22 @@ def create_lkas_hud(packer, lat_active, lss_state, lss_alert, tsr,
   return packer.make_can_msg("LKAS_HUD_ADAS", 0, values)
 
 
+def create_resume_sequence(packer, idle_dat: bytes, bus: int):
+  """Stock ACC SNG SET+RES burst for Seal/SL7/Shark; clone idle PCM_BUTTONS, overlay press."""
+  if len(idle_dat) < 8:
+    return None
+  _, press_dat, _ = send_buttons(packer, 1, 0, bus)
+  msgs, counter = [], (idle_dat[6] >> 4) & 0xF
+  for _ in range(3):
+    counter = (counter + 1) & 0xF
+    dat = bytearray(idle_dat)
+    dat[0], dat[1] = press_dat[0], press_dat[1]
+    dat[6] = (dat[6] & 0x0F) | ((counter & 0xF) << 4)
+    dat[7] = byd_checksum(0x3B0, None, dat)
+    msgs.append((0x3B0, bytes(dat), bus))
+  return msgs
+
+
 def send_buttons(packer, state, cancel, bus):
   values = {
     "SET_BTN": state,

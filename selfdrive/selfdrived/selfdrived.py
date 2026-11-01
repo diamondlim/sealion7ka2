@@ -81,6 +81,11 @@ class SelfdriveD:
     self.car_state_sock = messaging.sub_sock('carState', timeout=20)
 
     ignore = self.sensor_packets + self.gps_packets + ['alertDebug']
+    # KA2/hermes: structurally absent or only valid while actively driving on this unit (no radar
+    # fitted, DM camera below nominal, estimators that need motion). Unchecked they raise commIssue
+    # - a NO_ENTRY alert - on every drive and hold the status LED on orange.
+    ignore += ['radarState', 'driverMonitoringState', 'liveDelay', 'liveParameters',
+               'liveTorqueParameters', 'driverAssistance']
     if SIMULATION:
       ignore += ['driverCameraState', 'managerState']
     if REPLAY and not KA2:
@@ -196,7 +201,10 @@ class SelfdriveD:
       self.events.add(EventName.resumeBlocked)
 
     if not self.CP.notCar:
-      self.events.add_from_msg(self.sm['driverMonitoringState'].events)
+      # Driver monitoring is disabled on this device (process_config turns off dmonitoringmodeld
+      # and dmonitoringd), so there is no driverMonitoringState to raise alerts from. A param gate
+      # was tried first and crash-looped the daemon: Params only accepts registered key names.
+      pass
 
     # Add car events, ignore if CAN isn't valid
     if CS.canValid:

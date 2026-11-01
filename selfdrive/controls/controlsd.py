@@ -81,6 +81,12 @@ LANE_CORRECTION_DECOUPLE = 1.0
 # the lane centre, negative to the left. It is added to the correction's target, so unlike the model's own
 # path skew (DrivePathOffset, read once at modeld startup) it can be trimmed while driving.
 LANE_CORRECTION_BIAS_M = 0.0
+# Curve-only bias: sit this far away from the inside line of a bend, so a right-hander is taken a little
+# left of centre and a left-hander a little right. Scaled in with how tight the bend is, so a straight road
+# keeps the plain bias and a gentle sweep gets only part of it.
+LANE_CORRECTION_CURVE_BIAS_M = 0.10
+LANE_CORRECTION_CURVE_BIAS_MIN_CURV = 5.0e-4      # 1/2000 m: no bias below this
+LANE_CORRECTION_CURVE_BIAS_FULL_CURV = 1.2e-3     # 1/600 m: full bias above this
 
 # Memory and shaping for the lane geometry. Lane lines are noisy frame to frame — worse at
 # night — so the offset is low-passed rather than used raw. The first attempt used a sliding
@@ -95,6 +101,12 @@ LANE_CORRECTION_FILTER_TAU_S = 0.5   # s; first-order time constant (0.0 -> use 
 LANE_CORRECTION_MAX_ACC_RATE = 0.9   # m/s^2 per s; how fast the correction may change (0.0 -> unlimited)
 LANE_MEMORY_HOLD_S = 0.4             # how long a remembered offset survives a dropout
 LANE_MEMORY_MAX_YAW_RATE = 0.15      # rad/s; above this, never trust a stale offset
+LANE_REACQUIRE_S = 0.75             # s; ramp the offset back in after re-acquisition (0.0 -> instant)
+LANE_LEAD_FOLLOW_GAIN = 0.0          # 0.0 = off; how much of the lead's lateral offset to follow when lanes are gone
+LANE_LEAD_MIN_PROB = 0.5             # lead probability before it may steer us
+LANE_LEAD_MIN_X_M = 5.0              # m; closer than this is not a usable path reference
+LANE_LEAD_MAX_X_M = 45.0             # m; further than this its lateral offset is too noisy
+LANE_LEAD_MAX_OFFSET_M = 0.6         # m; never chase a lead further than this off centre
 
 # Runtime tuning of everything above. The values are re-read about once a second from a small JSON
 # file, so a knob can be moved while driving and A/B'd without a redeploy or a branch per value.
@@ -119,14 +131,20 @@ TUNING_LIMITS = {
   "LANE_CORRECTION_LOOKAHEAD_S": (1.5, 3.0),          # further ahead = gentler
   "LANE_CORRECTION_MIN_PROB": (0.5, 0.99),            # stricter lane-line confidence
   "LANE_CORRECTION_MAX_OFFSET_M": (0.2, 1.5),         # stricter plausibility bound
-  "LANE_CORRECTION_MAX_LAT_ACC": (0.0, 0.3),          # the shipped budget is the ceiling
+  "LANE_CORRECTION_MAX_LAT_ACC": (0.0, 0.45),          # the shipped budget is the ceiling
   "LANE_CORRECTION_MIN_SPEED": (5.0, 20.0),           # raise the speed the correction acts at
   "LANE_CORRECTION_FILTER_TAU_S": (0.5, 2.0),         # more smoothing
   "LANE_CORRECTION_MAX_ACC_RATE": (0.0, 0.9),         # slower changes; 0.0 = unlimited
-  "LANE_MEMORY_HOLD_S": (0.0, 0.4),                   # hold a stale offset for less time
+  "LANE_MEMORY_HOLD_S": (0.0, 1.5),                   # hold a stale offset for less time
   "LANE_MEMORY_MAX_YAW_RATE": (0.0, 0.15),            # trust the held offset in less curvature
+  "LANE_REACQUIRE_S": (0.0, 2.0),                     # slower re-acquisition of the lane offset
+  "LANE_LEAD_FOLLOW_GAIN": (0.0, 1.0),                # 0.0 = off; follow the lead's lateral offset
+  "LANE_LEAD_MIN_PROB": (0.3, 0.95),                  # stricter lead confidence
+  "LANE_LEAD_MAX_X_M": (10.0, 60.0),                  # accept a more distant lead
+  "LANE_LEAD_MAX_OFFSET_M": (0.1, 1.0),               # tighter chase bound
   "LANE_CORRECTION_DECOUPLE": (0.0, 1.0),             # 0.0 = plain pursuit, no lane-curvature cancellation
   "LANE_CORRECTION_BIAS_M": (-0.30, 0.30),            # where to sit in the lane; two-sided by nature
+  "LANE_CORRECTION_CURVE_BIAS_M": (0.0, 0.45),        # away from the inside line in a bend; 0.0 = off
 }
 TUNING_BASE = {name: globals()[name] for name in TUNING_LIMITS}
 _LANE_TUNING_LAST = None             # the tuning dict as last logged, so a change appears once in the journal
@@ -224,7 +242,19 @@ def lane_centre_offset(model_v2, v_ego, decouple=None):
   # geometry rather than the instruction. It costs budget in proportion to its size (~0.27 m/s^2 at the
   # 0.30 m limit, independent of speed because the lookahead grows with speed), so a large bias leaves the
   # correction less authority to hold the offset it is asking for.
-  return centre_offset + LANE_CORRECTION_BIAS_M
+  lane_inset = 0.0
+  if LANE_CORRECTION_CURVE_BIAS_M > 0.0:
+    y2l = y_at(lines[1], 2.0 * lookahead) if probs[1] >= LANE_CORRECTION_MIN_PROB else None
+    y2r = y_at(lines[2], 2.0 * lookahead) if probs[2] >= LANE_CORRECTION_MIN_PROB else None
+    if y2l is not None and y2r is not None and 1.5 <= (y2r - y2l) <= 6.0:
+      # Lane centre at 2L -> curvature (+ = the road bends right)
+      kappa = 0.5 * (y2l + y2r) / (2.0 * lookahead ** 2)
+      span = LANE_CORRECTION_CURVE_BIAS_FULL_CURV - LANE_CORRECTION_CURVE_BIAS_MIN_CURV
+      tight = (abs(kappa) - LANE_CORRECTION_CURVE_BIAS_MIN_CURV) / span if span > 0.0 else 0.0
+      if tight > 0.0:
+        lane_inset = -LANE_CORRECTION_CURVE_BIAS_M * math.copysign(min(1.0, tight), kappa)
+
+  return centre_offset + LANE_CORRECTION_BIAS_M + lane_inset
 
 
 def lane_curvature_from_offset(centre_offset, v_ego, lookahead):
@@ -257,15 +287,46 @@ def lane_centre_curvature(model_v2, v_ego):
   return lane_curvature_from_offset(centre_offset, v_ego, lookahead)
 
 
+def lead_path_offset(model_v2, gain, min_prob, min_x, max_x, max_offset):
+  """Lateral offset to hold behind the lead vehicle, or None when there is no usable lead.
+
+  A path reference of last resort: it is consulted only when the lane lines are unavailable,
+  never as an override of them. +y is to the car's right - the same frame and sign as
+  lane_centre_offset - so the target is the lead's own y, scaled and bounded.
+  """
+  if gain <= 0.0:
+    return None
+  leads = list(model_v2.leadsV3)
+  if not leads:
+    return None
+  lead = leads[0]
+  xs = list(lead.x)
+  ys = list(lead.y)
+  if not xs or not ys:
+    return None
+  if float(lead.prob) < min_prob:
+    return None
+  x = float(xs[0])
+  y = float(ys[0])
+  if not (min_x <= x <= max_x):
+    return None
+  if not math.isfinite(y) or abs(y) > 1.0:
+    return None                                  # beside us, not ahead: an adjacent-lane vehicle
+  return max(-max_offset, min(max_offset, gain * y))
+
+
 class LaneCentreMemory:
   """Lane-centre offset with memory: a first-order filter plus a bounded hold.
 
   Offset sign follows lane_centre_offset (+ = lane centre is left of the car).
   """
 
-  def __init__(self, tau_s=LANE_CORRECTION_FILTER_TAU_S, hold_s=LANE_MEMORY_HOLD_S, dt=DT_CTRL):
+  def __init__(self, tau_s=LANE_CORRECTION_FILTER_TAU_S, hold_s=LANE_MEMORY_HOLD_S, reacquire_s=LANE_REACQUIRE_S, dt=DT_CTRL):
     self.alpha = 1.0 - math.exp(-dt / tau_s) if tau_s > 0.0 else 1.0
     self.hold_s = hold_s
+    self.reacquire_s = reacquire_s
+    self.dt = dt
+    self._w = 1.0
     self._value = None
     self._samples = 0
     self._last_good_t = None
@@ -275,6 +336,20 @@ class LaneCentreMemory:
     self._value = None
     self._samples = 0
     self._last_good_t = None
+    self._w = 1.0
+
+  def adopt(self, offset, now):
+    """Take an externally supplied offset (lead follow) as if it were this frame's measurement."""
+    if self._value is None:
+      self._value = offset
+      self._w = 0.0 if self.reacquire_s > 0.0 else 1.0
+    else:
+      self._value = self._value + self.alpha * (offset - self._value)
+      if self.reacquire_s > 0.0:
+        self._w = min(1.0, self._w + self.dt / self.reacquire_s)
+    self._samples += 1
+    self._last_good_t = now
+    return self._value * self._w
 
   @property
   def samples(self):
@@ -287,15 +362,21 @@ class LaneCentreMemory:
     """
     offset = lane_centre_offset(model_v2, v_ego)
     if offset is not None:
-      self._value = offset if self._value is None else self._value + self.alpha * (offset - self._value)
+      if self._value is None:
+        self._value = offset
+        self._w = 0.0 if self.reacquire_s > 0.0 else 1.0
+      else:
+        self._value = self._value + self.alpha * (offset - self._value)
+        if self.reacquire_s > 0.0:
+          self._w = min(1.0, self._w + self.dt / self.reacquire_s)
       self._samples += 1
       self._last_good_t = now
-      return self._value
+      return self._value * self._w
 
     # Dropout: reuse the filtered value only briefly, and only while going straight.
     if (self._last_good_t is not None and (now - self._last_good_t) <= self.hold_s
         and abs(yaw_rate) <= LANE_MEMORY_MAX_YAW_RATE and self._value is not None):
-      return self._value
+      return self._value * self._w
 
     self.reset()
     return None
@@ -383,6 +464,7 @@ class Controls:
     tau = tuning.get("LANE_CORRECTION_FILTER_TAU_S", TUNING_BASE["LANE_CORRECTION_FILTER_TAU_S"])
     self.lane_centre.alpha = 1.0 - math.exp(-DT_CTRL / tau) if tau > 0.0 else 1.0
     self.lane_centre.hold_s = tuning.get("LANE_MEMORY_HOLD_S", TUNING_BASE["LANE_MEMORY_HOLD_S"])
+    self.lane_centre.reacquire_s = tuning.get("LANE_REACQUIRE_S", TUNING_BASE["LANE_REACQUIRE_S"])
     self.lane_slew.max_rate = tuning.get("LANE_CORRECTION_MAX_ACC_RATE",
                                          TUNING_BASE["LANE_CORRECTION_MAX_ACC_RATE"])
 
@@ -475,6 +557,11 @@ class Controls:
     if self.lane_correction_gain > 0.0 and CC.latActive and CS.vEgo > LANE_CORRECTION_MIN_SPEED and model_v2.meta.laneChangeState == LaneChangeState.off:
       centre_offset = self.lane_centre.update(model_v2, CS.vEgo, float(model_v2.orientationRate.z[0]),
                                               time.monotonic())
+      if centre_offset is None and LANE_LEAD_FOLLOW_GAIN > 0.0:
+        lead_offset = lead_path_offset(model_v2, LANE_LEAD_FOLLOW_GAIN, LANE_LEAD_MIN_PROB,
+                                       LANE_LEAD_MIN_X_M, LANE_LEAD_MAX_X_M, LANE_LEAD_MAX_OFFSET_M)
+        if lead_offset is not None:
+          centre_offset = self.lane_centre.adopt(lead_offset, time.monotonic())
       if centre_offset is not None:
         lookahead = max(CS.vEgo * LANE_CORRECTION_LOOKAHEAD_S, LANE_CORRECTION_MIN_LOOKAHEAD_M)
         extra_acc = self.lane_correction_gain * lane_extra_lat_acc(centre_offset, CS.vEgo, lookahead)

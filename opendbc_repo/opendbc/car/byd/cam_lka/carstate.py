@@ -38,6 +38,9 @@ class CarState(CarStateBase):
     self.lkas_rdy_btn = False
     self.op_long = True
     self.distance_val = 1
+    self.cruise_standstill = False
+    self.standstill_wait = False
+    self.sng_pcm_idle = None
 
   def _select_long_parser(self, cp, cp_cam):
     if self.CP.carFingerprint in BYD_OP_LONG_PLATFORMS:
@@ -56,8 +59,8 @@ class CarState(CarStateBase):
     self.tsr = cp_cam.vl["LKAS_HUD_ADAS"]["TSR"]
     self.lka_on = cp_cam.vl["LKAS_HUD_ADAS"]["STEER_ACTIVE_ACTIVE_LOW"]
 
-    self.lkas_rdy_btn = cp.vl["PCM_BUTTONS"]["LKAS_ON_BTN"]
-    self.res_btn = cp.vl["PCM_BUTTONS"]["RES_BTN"]
+    self.lkas_rdy_btn = (pcm := cp.vl["PCM_BUTTONS"])["LKAS_ON_BTN"]
+    self.res_btn = bool(pcm["RES_BTN"] and (pcm["SET_BTN"] or self.CP.carFingerprint in BYD_OP_LONG_PLATFORMS))
     self.abh = cp_cam.vl["LKAS_HUD_ADAS"]["SET_ME_XFF"]
     self.passthrough = cp_cam.vl["LKAS_HUD_ADAS"]["TSR_STATUS"]
     self.HMA = cp_cam.vl["LKAS_HUD_ADAS"]["HMA"]
@@ -156,8 +159,9 @@ class CarState(CarStateBase):
       self.is_cruise_latch = False
 
     if self.CP.carFingerprint in (CAR.BYD_SEAL, CAR.BYD_SEALION7, CAR.BYD_SEAL6, CAR.BYD_SHARK, CAR.BYD_M6):
-      cruise_state = parser_alt.vl["ACC_HUD_ADAS"]["CRUISE_STATE"]
-      ret.cruiseState.enabled = cruise_state in (3, 5, 6, 7)
+      ret.cruiseState.enabled = (cruise_state := parser_alt.vl["ACC_HUD_ADAS"]["CRUISE_STATE"]) in (3, 5, 6, 7)
+      self.cruise_standstill = cruise_state in (6, 7) and ret.standstill
+      self.standstill_wait = cruise_state == 7
     else:
       ret.cruiseState.enabled = self.is_cruise_latch
 

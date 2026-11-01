@@ -30,7 +30,7 @@ class CarInterface(CarInterfaceBase):
     ret.safetyConfigs[0].safetyParam = 0
 
     ret.steerLimitTimer = 0.6
-    ret.steerActuatorDelay = 0.01
+    ret.steerActuatorDelay = 0.1
     ret.lateralTuning.init("pid")
     ret.centerToFront = ret.wheelbase * 0.44
     ret.tireStiffnessFactor = 0.9871
