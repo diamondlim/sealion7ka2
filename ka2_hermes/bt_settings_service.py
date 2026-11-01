@@ -103,6 +103,19 @@ TUNING_TITLES = {
   "LANE_MEMORY_MAX_YAW_RATE": ("Yaw-rate limit for a held offset (rad/s)",
                                "Live tuning. Above this curvature rate a remembered offset is "
                                "never trusted. Tighter only."),
+  "LANE_LEAD_FOLLOW_GAIN": ("Follow the lead car when the lines are gone (0-1)",
+                             "When the lane lines are unavailable, hold the position of the car ahead "
+                             "instead of giving up: 0 = the previous behaviour, 1 = follow its lateral "
+                             "offset fully (still bounded, and still only a fill-in for a missing lane)."),
+  "LANE_LEAD_MIN_PROB": ("Lead confidence needed",
+                          "How sure the model must be that the car ahead is really your lead before it "
+                          "may steer you. Stricter only."),
+  "LANE_LEAD_MAX_X_M": ("Furthest lead used (m)",
+                         "A lead further away than this is ignored: its lateral offset gets too noisy "
+                         "to steer by."),
+  "LANE_LEAD_MAX_OFFSET_M": ("Most it will chase the lead (m)",
+                              "Cap on the lateral offset taken from the lead, so a drifting car ahead "
+                              "cannot pull you out of your lane."),
   "LANE_REACQUIRE_S": ("Re-acquisition ramp (s)",
                        "Live tuning. After the lane lines return, the lane-centre offset fades "
                        "back in over this time instead of stepping to the new value. 0 = instant, "
@@ -140,6 +153,10 @@ TUNING_STEPS = {
   "LANE_CORRECTION_MAX_ACC_RATE": 0.1,
   "LANE_MEMORY_HOLD_S": 0.05,
   "LANE_MEMORY_MAX_YAW_RATE": 0.025,
+  "LANE_LEAD_FOLLOW_GAIN": 0.1,
+  "LANE_LEAD_MIN_PROB": 0.05,
+  "LANE_LEAD_MAX_X_M": 5.0,
+  "LANE_LEAD_MAX_OFFSET_M": 0.1,
   "LANE_REACQUIRE_S": 0.25,
   "LANE_CORRECTION_DECOUPLE": 1.0,          # 0/1 toggle
   "LANE_CORRECTION_BIAS_M": 0.05,           # metres
