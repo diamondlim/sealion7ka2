@@ -1134,7 +1134,7 @@ class Session:
   GPS_EVERY_S = 1.0       # GNSS state rides along with the lane stream this often: it changes at
                           # about that rate, and it is what the lane page shows as its GPS row
   READ_TIMEOUT_S = 0.2    # how long a read waits before the pose loop takes a turn
-  SEND_TIMEOUT_S = 5.0    # a write gets far longer: a Bluetooth link that is briefly busy must not
+  SEND_TIMEOUT_S = 20.0   # a write gets far longer: a Bluetooth link that is briefly busy must not
                           # kill the session, which is exactly what a 0.1 s write timeout did
 
   def __init__(self, sock, label):
@@ -1247,6 +1247,80 @@ class Session:
       except Exception:
         pass
       log("disconnect %s" % self.label)
+
+
+WIFI_HOST, WIFI_PORT = "10.42.0.1", 9912      # the KA2's own hotspot address, never 0.0.0.0
+TOKEN_PATH = "/data/hermes/wifi_token"
+
+
+def wifi_token():
+  """A shared secret for the Wi-Fi listener, generated once and kept beside the service."""
+  try:
+    with open(TOKEN_PATH) as fh:
+      tok = fh.read().strip()
+    if tok:
+      return tok
+  except Exception:
+    pass
+  tok = os.urandom(8).hex()
+  try:
+    fd = os.open(TOKEN_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as fh:
+      fh.write(tok + "\n")
+  except Exception as exc:
+    log("wifi token write failed: %s" % exc)
+  return tok
+
+
+def _wifi_session(conn, addr, token):
+  label = "wifi %s:%d" % addr
+  try:
+    conn.settimeout(5.0)
+    hello = conn.recv(200)
+    if hello.strip() != b"AUTH " + token:
+      log("wifi rejected %s" % label)
+      conn.close()
+      return
+    conn.settimeout(None)
+  except Exception as exc:
+    log("wifi handshake failed %s: %s" % (label, exc))
+    try:
+      conn.close()
+    except Exception:
+      pass
+    return
+  Session(conn, label).run()
+
+
+def serve_wifi():
+  """The same protocol over the KA2's hotspot, behind a token.
+
+  Bluetooth on the phone side stalls for seconds at a time, which froze the lane page mid-drive.
+  The hotspot is a far steadier pipe. Bound to the AP address only: 0.0.0.0 would also publish it
+  on the car's LTE uplink.
+  """
+  token = wifi_token().encode()
+  while True:
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+      srv.bind((WIFI_HOST, WIFI_PORT))
+    except OSError:
+      try:
+        srv.close()
+      except Exception:
+        pass
+      time.sleep(10)          # hotspot not up yet, or not on this address
+      continue
+    srv.listen(4)
+    log("wifi listener on %s:%d" % (WIFI_HOST, WIFI_PORT))
+    while True:
+      try:
+        conn, addr = srv.accept()
+        threading.Thread(target=_wifi_session, args=(conn, addr, token), daemon=True).start()
+      except Exception as exc:
+        log("wifi accept error: %s" % exc)
+        break
 
 
 def serve_tcp():
@@ -1465,6 +1539,7 @@ def main():
     log("ADAPTER FAILED: %s" % exc)
   GLib.timeout_add_seconds(ADAPTER_RECHECK_S, adapter_keepalive, bus)
   threading.Thread(target=serve_tcp, daemon=True).start()
+  threading.Thread(target=serve_wifi, daemon=True).start()
   GLib.MainLoop().run()
   return 0
 
