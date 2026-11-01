@@ -178,7 +178,7 @@ def main():
             if not state.get("hasFix"):
                 write_json({}, reason=rf)   # so anything reading /dev/shm can say why, not just show nothing
 
-        time.sleep(max(0.2, 1.0 - (time.time() - cycle)))
+        time.sleep(max(0.2, 2.0 - (time.time() - cycle)))
 
 
 if __name__ == "__main__":
