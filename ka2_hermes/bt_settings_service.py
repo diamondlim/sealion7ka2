@@ -99,7 +99,7 @@ TUNING_TITLES = {
                                    "0 means unlimited, as in the code."),
   "LANE_MEMORY_HOLD_S": ("Memory hold after a dropout (s)",
                          "Live tuning. How long a remembered offset survives losing the lane "
-                         "lines. Shorter only."),
+                         "lines. Capped at the fork’s engineered maximum; longer carries a stale offset further into a gap."),
   "LANE_MEMORY_MAX_YAW_RATE": ("Yaw-rate limit for a held offset (rad/s)",
                                "Live tuning. Above this curvature rate a remembered offset is "
                                "never trusted. Tighter only."),

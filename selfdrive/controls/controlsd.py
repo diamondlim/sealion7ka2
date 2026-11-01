@@ -129,7 +129,7 @@ TUNING_LIMITS = {
   "LANE_CORRECTION_MIN_SPEED": (5.0, 20.0),           # raise the speed the correction acts at
   "LANE_CORRECTION_FILTER_TAU_S": (0.5, 2.0),         # more smoothing
   "LANE_CORRECTION_MAX_ACC_RATE": (0.0, 0.9),         # slower changes; 0.0 = unlimited
-  "LANE_MEMORY_HOLD_S": (0.0, 0.4),                   # hold a stale offset for less time
+  "LANE_MEMORY_HOLD_S": (0.0, 1.5),                   # hold a stale offset for less time
   "LANE_MEMORY_MAX_YAW_RATE": (0.0, 0.15),            # trust the held offset in less curvature
   "LANE_CORRECTION_DECOUPLE": (0.0, 1.0),             # 0.0 = plain pursuit, no lane-curvature cancellation
   "LANE_CORRECTION_BIAS_M": (-0.30, 0.30),            # where to sit in the lane; two-sided by nature
