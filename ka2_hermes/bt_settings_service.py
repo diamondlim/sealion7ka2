@@ -120,6 +120,18 @@ TUNING_TITLES = {
                        "Live tuning. After the lane lines return, the lane-centre offset fades "
                        "back in over this time instead of stepping to the new value. 0 = instant, "
                        "which is the old behaviour."),
+  "LANE_SINGLE_LINE_ENABLE": ("One visible line is enough (0/1)",
+                             "When only one lane line is confident, infer the other from the "
+                             "width measured on earlier frames instead of giving up. 0 = both "
+                             "lines required, as before."),
+  "LANE_WIDTH_DEFAULT_M": ("Lane width before one is measured (m)",
+                            "Width assumed until a real pair has been seen; the median of the "
+                            "measured widths replaces it immediately."),
+  "LANE_EDGE_GUARD_ENABLE": ("Keep off the road edge (0/1)",
+                              "A confident road edge is a hard limit: the target is kept inside "
+                              "it rather than steering toward the verge."),
+  "LANE_EDGE_INSET_M": ("Margin from the road edge (m)",
+                         "How far inside a confident road edge the target must stay."),
   "LANE_CORRECTION_DECOUPLE": ("Work on the lane, not on the bend (0/1)",
                                "1 = the correction subtracts the lane's own curvature, so through a corner it "
                                "acts on where you sit in the lane instead of on the bend itself - it stops "
@@ -158,6 +170,10 @@ TUNING_STEPS = {
   "LANE_LEAD_MAX_X_M": 5.0,
   "LANE_LEAD_MAX_OFFSET_M": 0.1,
   "LANE_REACQUIRE_S": 0.25,
+  "LANE_SINGLE_LINE_ENABLE": 1.0,
+  "LANE_WIDTH_DEFAULT_M": 0.1,
+  "LANE_EDGE_GUARD_ENABLE": 1.0,
+  "LANE_EDGE_INSET_M": 0.05,
   "LANE_CORRECTION_DECOUPLE": 1.0,          # 0/1 toggle
   "LANE_CORRECTION_BIAS_M": 0.05,           # metres
   "LANE_CORRECTION_CURVE_BIAS_M": 0.05,      # metres
