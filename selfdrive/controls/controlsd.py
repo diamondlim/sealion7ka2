@@ -107,6 +107,10 @@ LANE_LEAD_MIN_PROB = 0.5             # lead probability before it may steer us
 LANE_LEAD_MIN_X_M = 5.0              # m; closer than this is not a usable path reference
 LANE_LEAD_MAX_X_M = 45.0             # m; further than this its lateral offset is too noisy
 LANE_LEAD_MAX_OFFSET_M = 0.6         # m; never chase a lead further than this off centre
+LANE_SINGLE_LINE_ENABLE = 1.0        # 1 = one confident line + remembered width is enough
+LANE_WIDTH_DEFAULT_M = 3.5           # m; used until a width has actually been measured
+LANE_EDGE_GUARD_ENABLE = 1.0         # 1 = keep the target inset from a confident road edge
+LANE_EDGE_INSET_M = 0.30             # m; how far inside a road edge the centre must stay
 
 # Runtime tuning of everything above. The values are re-read about once a second from a small JSON
 # file, so a knob can be moved while driving and A/B'd without a redeploy or a branch per value.
@@ -142,6 +146,10 @@ TUNING_LIMITS = {
   "LANE_LEAD_MIN_PROB": (0.3, 0.95),                  # stricter lead confidence
   "LANE_LEAD_MAX_X_M": (10.0, 60.0),                  # accept a more distant lead
   "LANE_LEAD_MAX_OFFSET_M": (0.1, 1.0),               # tighter chase bound
+  "LANE_SINGLE_LINE_ENABLE": (0.0, 1.0),              # off = both lines required, as before
+  "LANE_WIDTH_DEFAULT_M": (2.8, 4.2),                 # width assumed before any is measured
+  "LANE_EDGE_GUARD_ENABLE": (0.0, 1.0),               # off = edges never bound the target
+  "LANE_EDGE_INSET_M": (0.1, 1.0),                    # margin from a confident road edge
   "LANE_CORRECTION_DECOUPLE": (0.0, 1.0),             # 0.0 = plain pursuit, no lane-curvature cancellation
   "LANE_CORRECTION_BIAS_M": (-0.30, 0.30),            # where to sit in the lane; two-sided by nature
   "LANE_CORRECTION_CURVE_BIAS_M": (0.0, 0.45),        # away from the inside line in a bend; 0.0 = off
@@ -174,6 +182,24 @@ def read_tuning(path=TUNING_PATH, limits=TUNING_LIMITS):
       continue
     out[name] = float(np.clip(value, low, high))
   return out
+
+
+_WIDTH_HISTORY = []            # lane widths actually measured recently, oldest first
+
+
+def lane_width_estimate(measured=None):
+  """The width to assume when only one line is visible.
+
+  A measured pair is recorded and the median of the recent ones is returned, so the estimate
+  follows this road instead of a number someone guessed. With nothing recorded yet the
+  configured default is used, and the first real pair replaces it immediately.
+  """
+  if measured is not None and 1.5 <= measured <= 6.0:
+    _WIDTH_HISTORY.append(float(measured))
+    del _WIDTH_HISTORY[:-150]
+  if _WIDTH_HISTORY:
+    return float(np.median(_WIDTH_HISTORY))
+  return LANE_WIDTH_DEFAULT_M
 
 
 def lane_centre_offset(model_v2, v_ego, decouple=None):
@@ -212,18 +238,37 @@ def lane_centre_offset(model_v2, v_ego, decouple=None):
 
   y_left = y_at(lines[1], lookahead) if probs[1] >= LANE_CORRECTION_MIN_PROB else None
   y_right = y_at(lines[2], lookahead) if probs[2] >= LANE_CORRECTION_MIN_PROB else None
-  if y_left is None or y_right is None:
-    return None                                  # never mix in adjacent-lane lines
-  if y_left >= y_right:
-    return None                                  # left line must sit at the lower y (+y is right)
-  if not 1.5 <= (y_right - y_left) <= 6.0:
-    return None                                  # implausible lane width
 
+  # Width first: a measured pair is the best evidence there is, and both the "one line is enough"
+  # fallback and the curve-bias reference depend on it. An implausible pair is no pair at all.
+  measured = None
+  if y_left is not None and y_right is not None and y_left < y_right:
+    if 1.5 <= (y_right - y_left) <= 6.0:
+      measured = y_right - y_left
+    else:
+      y_left = None
+      y_right = None
+  width = lane_width_estimate(measured)
+
+  single_line = False
+  if y_left is None and y_right is None:
+    return None                                  # nothing to work from; memory or the lead take over
+  if y_left is None or y_right is None:
+    if LANE_SINGLE_LINE_ENABLE <= 0.0:
+      return None                                # both lines required, as before
+    single_line = True
+    if y_left is None:
+      assert y_right is not None                 # the branch above guarantees one of them
+      y_left = y_right - width                   # infer the missing line from the remembered width
+    else:
+      y_right = y_left + width
+
+  assert y_left is not None and y_right is not None
   centre_offset = 0.5 * (y_left + y_right)       # + means the lane centre is right of the car
 
   if decouple is None:
     decouple = bool(LANE_CORRECTION_DECOUPLE)
-  if decouple:
+  if decouple and not single_line:
     # Remove the lane's own curvature (see LANE_CORRECTION_DECOUPLE): the same pair, twice the lookahead.
     # The lane-width test is repeated there because a line that has wandered into another lane is worthless
     # as a curvature reference. No 2L sample (short line) -> the plain offset, i.e. the previous behaviour.
@@ -237,6 +282,17 @@ def lane_centre_offset(model_v2, v_ego, decouple=None):
   # correction off in exactly the corners it exists for.
   if abs(centre_offset) > LANE_CORRECTION_MAX_OFFSET_M:
     return None
+
+  # A confident road edge is a hard boundary even when the lane lines are not: keep the target
+  # inside it rather than steering to a centre that would put the car on the verge. Edges bound the
+  # target, they never define it - a shoulder's width is unknown and would bias the centre.
+  if LANE_EDGE_GUARD_ENABLE > 0.0 and len(probs) >= 4 and len(lines) >= 4:
+    edge_left = y_at(lines[0], lookahead) if probs[0] >= LANE_CORRECTION_MIN_PROB else None
+    edge_right = y_at(lines[3], lookahead) if probs[3] >= LANE_CORRECTION_MIN_PROB else None
+    if edge_left is not None and edge_left < 0.0:
+      centre_offset = max(centre_offset, edge_left + LANE_EDGE_INSET_M)
+    if edge_right is not None and edge_right > 0.0:
+      centre_offset = min(centre_offset, edge_right - LANE_EDGE_INSET_M)
 
   # The owner's chosen position in the lane, added after the bound so the bound keeps testing the raw
   # geometry rather than the instruction. It costs budget in proportion to its size (~0.27 m/s^2 at the
