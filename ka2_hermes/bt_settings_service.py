@@ -120,18 +120,6 @@ TUNING_TITLES = {
                        "Live tuning. After the lane lines return, the lane-centre offset fades "
                        "back in over this time instead of stepping to the new value. 0 = instant, "
                        "which is the old behaviour."),
-  "LANE_SINGLE_LINE_ENABLE": ("One visible line is enough (0/1)",
-                             "When only one lane line is confident, infer the other from the "
-                             "width measured on earlier frames instead of giving up. 0 = both "
-                             "lines required, as before."),
-  "LANE_WIDTH_DEFAULT_M": ("Lane width before one is measured (m)",
-                            "Width assumed until a real pair has been seen; the median of the "
-                            "measured widths replaces it immediately."),
-  "LANE_EDGE_GUARD_ENABLE": ("Keep off the road edge (0/1)",
-                              "A confident road edge is a hard limit: the target is kept inside "
-                              "it rather than steering toward the verge."),
-  "LANE_EDGE_INSET_M": ("Margin from the road edge (m)",
-                         "How far inside a confident road edge the target must stay."),
   "LANE_CORRECTION_DECOUPLE": ("Work on the lane, not on the bend (0/1)",
                                "1 = the correction subtracts the lane's own curvature, so through a corner it "
                                "acts on where you sit in the lane instead of on the bend itself - it stops "
@@ -170,10 +158,6 @@ TUNING_STEPS = {
   "LANE_LEAD_MAX_X_M": 5.0,
   "LANE_LEAD_MAX_OFFSET_M": 0.1,
   "LANE_REACQUIRE_S": 0.25,
-  "LANE_SINGLE_LINE_ENABLE": 1.0,
-  "LANE_WIDTH_DEFAULT_M": 0.1,
-  "LANE_EDGE_GUARD_ENABLE": 1.0,
-  "LANE_EDGE_INSET_M": 0.05,
   "LANE_CORRECTION_DECOUPLE": 1.0,          # 0/1 toggle
   "LANE_CORRECTION_BIAS_M": 0.05,           # metres
   "LANE_CORRECTION_CURVE_BIAS_M": 0.05,      # metres
@@ -1035,6 +1019,31 @@ def acc_reply(sub):
   return "ACC press tool said nothing (rc=%s%s)" % (p.returncode, (": " + err[-1][:100]) if err else "")
 
 
+def _profile_reply(sub):
+  """Thin wrapper over the profile engine, which owns the "car must be stopped" rule.
+
+  Kept out of this process on purpose: switching a profile restarts the camera stack, and a
+  service that can be restarted mid-drive should not be the thing deciding whether that is safe.
+  """
+  script = "/data/hermes/iq_profile.py"
+  if not os.path.exists(script):
+    return ["ERR PROFILE engine missing (%s)" % script]
+  if sub == "STATUS":
+    args = ["status"]
+  elif sub in ("DAY_DRY", "NIGHT_DRY", "DAY_RAIN", "NIGHT_RAIN"):
+    args = ["apply", sub.lower()]
+  else:
+    return ["ERR PROFILE unknown (%s)" % sub]
+  try:
+    out = subprocess.run([sys.executable, script] + args, capture_output=True, text=True,
+                         stdin=subprocess.DEVNULL, timeout=240)
+  except Exception as exc:
+    return ["ERR PROFILE %s" % exc]
+  lines = [ln for ln in (out.stdout or "").strip().splitlines() if ln.startswith("PROFILE ")]
+  payload = lines[-1][8:] if lines else (out.stderr or "no output").strip()[-200:]
+  return ["P " + payload]
+
+
 def handle(line):
   parts = line.strip().split()
   if not parts:
@@ -1043,7 +1052,8 @@ def handle(line):
   if cmd == "HELP":
     return ["OK commands: INFO | SCHEMA | LIST | GET <Key> | SET <Key> <value> | ACT <NAME> | "
             "POSE 0|1 | WIFI STATUS|LIST|CONNECT|FORGET | HOTSPOT ON|OFF|STATUS | "
-            "UPLINK SIM|WIFI|STATUS | VER <client> | HELP"]
+            "UPLINK SIM|WIFI|STATUS | PROFILE STATUS|DAY_DRY|NIGHT_DRY|DAY_RAIN|NIGHT_RAIN | "
+            "VER <client> | HELP"]
   if cmd == "WIFI":
     # The payload is everything after the subcommand, unsplit: a password may contain spaces.
     pieces = line.split(None, 2)
@@ -1071,6 +1081,9 @@ def handle(line):
       except Exception:
         return ["ERR UPLINK bad-json-payload"]
     return _uplink_reply(sub, payload, _ip_of)
+  if cmd == "PROFILE":
+    sub = parts[1].upper() if len(parts) > 1 else "STATUS"
+    return _profile_reply(sub)
   if cmd.startswith("DRIVES"):
     return _log_command(cmd)
 
