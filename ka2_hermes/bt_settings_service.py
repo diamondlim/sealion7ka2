@@ -1039,31 +1039,6 @@ def acc_reply(sub):
   return "ACC press tool said nothing (rc=%s%s)" % (p.returncode, (": " + err[-1][:100]) if err else "")
 
 
-def _profile_reply(sub):
-  """Thin wrapper over the profile engine, which owns the "car must be stopped" rule.
-
-  Kept out of this process on purpose: switching a profile restarts the camera stack, and a
-  service that can be restarted mid-drive should not be the thing deciding whether that is safe.
-  """
-  script = "/data/hermes/iq_profile.py"
-  if not os.path.exists(script):
-    return ["ERR PROFILE engine missing (%s)" % script]
-  if sub == "STATUS":
-    args = ["status"]
-  elif sub in ("DAY_DRY", "NIGHT_DRY", "DAY_RAIN", "NIGHT_RAIN"):
-    args = ["apply", sub.lower()]
-  else:
-    return ["ERR PROFILE unknown (%s)" % sub]
-  try:
-    out = subprocess.run([sys.executable, script] + args, capture_output=True, text=True,
-                         stdin=subprocess.DEVNULL, timeout=240)
-  except Exception as exc:
-    return ["ERR PROFILE %s" % exc]
-  lines = [ln for ln in (out.stdout or "").strip().splitlines() if ln.startswith("PROFILE ")]
-  payload = lines[-1][8:] if lines else (out.stderr or "no output").strip()[-200:]
-  return ["P " + payload]
-
-
 def handle(line):
   parts = line.strip().split()
   if not parts:
@@ -1072,7 +1047,7 @@ def handle(line):
   if cmd == "HELP":
     return ["OK commands: INFO | SCHEMA | LIST | GET <Key> | SET <Key> <value> | ACT <NAME> | "
             "POSE 0|1 | WIFI STATUS|LIST|CONNECT|FORGET | HOTSPOT ON|OFF|STATUS | "
-            "UPLINK SIM|WIFI|STATUS | PROFILE STATUS|DAY_DRY|NIGHT_DRY|DAY_RAIN|NIGHT_RAIN | "
+            "UPLINK SIM|WIFI|STATUS | "
             "VER <client> | HELP"]
   if cmd == "WIFI":
     # The payload is everything after the subcommand, unsplit: a password may contain spaces.
@@ -1101,9 +1076,6 @@ def handle(line):
       except Exception:
         return ["ERR UPLINK bad-json-payload"]
     return _uplink_reply(sub, payload, _ip_of)
-  if cmd == "PROFILE":
-    sub = parts[1].upper() if len(parts) > 1 else "STATUS"
-    return _profile_reply(sub)
   if cmd.startswith("DRIVES"):
     return _log_command(cmd)
 
