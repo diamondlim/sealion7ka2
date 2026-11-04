@@ -1035,7 +1035,8 @@ def _profile_reply(sub):
   else:
     return ["ERR PROFILE unknown (%s)" % sub]
   try:
-    out = subprocess.run([sys.executable, script] + args, capture_output=True, text=True, timeout=240)
+    out = subprocess.run([sys.executable, script] + args, capture_output=True, text=True,
+                         stdin=subprocess.DEVNULL, timeout=240)
   except Exception as exc:
     return ["ERR PROFILE %s" % exc]
   lines = [ln for ln in (out.stdout or "").strip().splitlines() if ln.startswith("PROFILE ")]
