@@ -40,6 +40,15 @@ OD = '/data/openpilot'
 
 
 
+def upload_timeout(s):
+    assert 'timeout=10' in s, 'no timeout=10 in kommu.py'
+    return s.replace('timeout=10', 'timeout=120')
+
+
+edit(OD + '/system/loggerd/kommu.py', 'timeout=120', upload_timeout)
+
+
+
 def drop_button_keepalive(s):
     old = ("        else:\n"
            "          if CS.out.standstill and CC.enabled and (self.frame % BUTTON_KEEPALIVE_FRAMES == 0):\n"

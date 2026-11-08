@@ -14,7 +14,7 @@ def fia_upload(base_fn, fn):
     raise Exception("can't get upload url")
 
   with open(fn, "rb") as f:
-    resp = kapi(requests.put, WEB_BASE + "/fia" + resp.text, data=f, headers=headers, timeout=10)
+    resp = kapi(requests.put, WEB_BASE + "/fia" + resp.text, data=f, headers=headers, timeout=120)
   return resp
 
 
@@ -30,5 +30,5 @@ def fia_upload_bytes(base_fn: str, data: bytes):
   if resp.status_code != 200:
     raise Exception("can't get upload url")
 
-  resp = kapi(requests.put, WEB_BASE + "/fia" + resp.text, data=data, headers=headers, timeout=10)
+  resp = kapi(requests.put, WEB_BASE + "/fia" + resp.text, data=data, headers=headers, timeout=120)
   return resp
