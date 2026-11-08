@@ -13,6 +13,7 @@ import datetime
 from collections.abc import Iterator
 
 from cereal import log
+import concurrent.futures
 import cereal.messaging as messaging
 from openpilot.common.api import Api
 from openpilot.common.utils import get_upload_stream
@@ -52,6 +53,12 @@ def _has_ipv4_default_route() -> bool:
     pass
   return False
 UPLOAD_ATTR_VALUE = b'1'
+
+# HERMES parallel upload patch
+UPLOAD_WORKERS = int(os.getenv("KOMMU_UPLOAD_WORKERS", "10"))
+_STAT_EVERY = int(os.getenv("KOMMU_STAT_EVERY", "10"))
+_pool = None
+_loop_n = 0
 
 MAX_UPLOAD_SIZES = {
   "qlog": 25*1e6,  # can't be too restrictive here since we use qlogs to find
@@ -486,8 +493,25 @@ def main(exit_event: threading.Event | None = None) -> None:
       continue
 
     try:
-      success = uploader.step(sm['deviceState'].networkType.raw, sm['deviceState'].networkMetered)
-      uploader.update_queue_stats()
+      global _pool, _loop_n
+      _net_type = sm['deviceState'].networkType.raw
+      _metered = sm['deviceState'].networkMetered
+      if _pool is None:
+        _pool = concurrent.futures.ThreadPoolExecutor(max_workers=UPLOAD_WORKERS, thread_name_prefix="up")
+      _futs = [_pool.submit(uploader.step, _net_type, _metered) for _ in range(UPLOAD_WORKERS)]
+      _res = []
+      for _f in _futs:
+        try:
+          _res.append(_f.result(timeout=300))
+        except Exception:
+          _res.append(False)
+      if all(r is None for r in _res):
+        success = None
+      else:
+        success = any(bool(r) for r in _res)
+      _loop_n += 1
+      if _loop_n % _STAT_EVERY == 0:
+        uploader.update_queue_stats()
     except Exception:
       cloudlog.exception("uploader step failed")
       success = False

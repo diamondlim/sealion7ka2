@@ -149,3 +149,6 @@ if [ ! -f "$SNG_HELPER" ] || ! grep -q 'sng_pcm_idle' "$CARD"; then
 fi
 
 exit 0
+
+# Parallel Kommu upload (idempotent; uploader.py is reset by the updater)
+python3 /data/hermes/parallel_upload_patch.py || echo "  SKIP parallel upload patch"
