@@ -55,7 +55,7 @@ def _has_ipv4_default_route() -> bool:
 UPLOAD_ATTR_VALUE = b'1'
 
 # HERMES parallel upload patch
-UPLOAD_WORKERS = int(os.getenv("KOMMU_UPLOAD_WORKERS", "10"))
+UPLOAD_WORKERS = int(os.getenv("KOMMU_UPLOAD_WORKERS", "24"))
 _STAT_EVERY = int(os.getenv("KOMMU_STAT_EVERY", "10"))
 _pool = None
 _loop_n = 0
