@@ -1046,7 +1046,7 @@ def handle(line):
   cmd = parts[0].upper()
   if cmd == "HELP":
     return ["OK commands: INFO | SCHEMA | LIST | GET <Key> | SET <Key> <value> | ACT <NAME> | "
-            "POSE 0|1 | WIFI STATUS|LIST|CONNECT|FORGET | HOTSPOT ON|OFF|STATUS | "
+            "POSE 0|1 | WIFI STATUS|LIST|CONNECT|FORGET | HOTSPOT ON|OFF|STATUS | PD ON|OFF|STATUS | "
             "UPLINK SIM|WIFI|STATUS | "
             "VER <client> | HELP"]
   if cmd == "WIFI":
@@ -1065,6 +1065,25 @@ def handle(line):
   if cmd == "HOTSPOT":
     sub = parts[1].upper() if len(parts) > 1 else "STATUS"
     return _hotspot_reply(sub, None, _ip_of)
+  if cmd == "PD":
+    sub = parts[1].upper() if len(parts) > 1 else "STATUS"
+    path = os.path.join(PARAMS, "DisablePowerDown")
+    if sub == "STATUS":
+      try:
+        val = open(path).read().strip()
+      except Exception:
+        val = ""
+      return ["OK PD %s" % ("ON" if val == "1" else "OFF")]
+    if sub == "ON":
+      write_param("DisablePowerDown", "1")
+      return ["OK PD ON"]
+    if sub == "OFF":
+      try:
+        os.unlink(path)
+      except Exception:
+        pass
+      return ["OK PD OFF"]
+    return ["ERR PD ON|OFF|STATUS"]
   if cmd == "UPLINK":
     # Like WIFI: the payload is the rest of the line, unsplit, so a password may contain spaces.
     pieces = line.split(None, 2)
