@@ -48,6 +48,26 @@ def upload_timeout(s):
 edit(OD + '/system/loggerd/kommu.py', 'timeout=120', upload_timeout)
 
 
+def upload_video_cap(s):
+    old = '  "qcam": 5*1e6,\n}'
+    assert old in s, 'MAX_UPLOAD_SIZES tail not found'
+    new = ('  "qcam": 5*1e6,\n'
+           '  "qlog.zst": 25*1e6,\n'
+           '  "qcamera.ts": 5*1e6,\n'
+           '  # Hermes: camera video is 99% of the cloud backlog and is not needed there.\n'
+           '  # A 1-byte cap makes upload() take the too-large branch, which marks the file\n'
+           '  # done without transferring it. On-demand full-segment uploads still pass\n'
+           '  # UPLOAD_FULL_LOG_MAX_SIZE explicitly, so they are unaffected.\n'
+           '  "fcamera.hevc": 1,\n'
+           '  "dcamera.hevc": 1,\n'
+           '  "ecamera.hevc": 1,\n}')
+    return s.replace(old, new, 1)
+
+
+edit(OD + '/system/loggerd/uploader.py', '"fcamera.hevc": 1', upload_video_cap)
+
+
+
 
 def drop_button_keepalive(s):
     old = ("        else:\n"
