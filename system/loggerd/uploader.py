@@ -63,7 +63,16 @@ _loop_n = 0
 MAX_UPLOAD_SIZES = {
   "qlog": 25*1e6,  # can't be too restrictive here since we use qlogs to find
                    # bugs, including ones that can cause massive log sizes
+  "qlog.zst": 25*1e6,
   "qcam": 5*1e6,
+  "qcamera.ts": 5*1e6,
+  # Hermes: camera video is 99% of the backlog and is not needed in the cloud.
+  # A cap of 1 byte makes upload() take the "too large" branch, which marks the
+  # file done without transferring it. On-demand full-segment uploads still
+  # work: that path passes UPLOAD_FULL_LOG_MAX_SIZE explicitly.
+  "fcamera.hevc": 1,
+  "dcamera.hevc": 1,
+  "ecamera.hevc": 1,
 }
 UPLOAD_QLOG_QCAM_MAX_SIZE = 100 * 1e6  # MB (default when max_size not passed)
 UPLOAD_FULL_LOG_MAX_SIZE = 300 * 1e6  # MB (on-demand full-segment uploads)
