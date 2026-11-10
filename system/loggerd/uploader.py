@@ -13,7 +13,6 @@ import datetime
 from collections.abc import Iterator
 
 from cereal import log
-import concurrent.futures
 import cereal.messaging as messaging
 from openpilot.common.api import Api
 from openpilot.common.utils import get_upload_stream
@@ -54,22 +53,16 @@ def _has_ipv4_default_route() -> bool:
   return False
 UPLOAD_ATTR_VALUE = b'1'
 
-# HERMES parallel upload patch
-UPLOAD_WORKERS = int(os.getenv("KOMMU_UPLOAD_WORKERS", "24"))
-_STAT_EVERY = int(os.getenv("KOMMU_STAT_EVERY", "10"))
-_pool = None
-_loop_n = 0
-
 MAX_UPLOAD_SIZES = {
   "qlog": 25*1e6,  # can't be too restrictive here since we use qlogs to find
                    # bugs, including ones that can cause massive log sizes
-  "qlog.zst": 25*1e6,
   "qcam": 5*1e6,
+  "qlog.zst": 25*1e6,
   "qcamera.ts": 5*1e6,
-  # Hermes: camera video is 99% of the backlog and is not needed in the cloud.
-  # A cap of 1 byte makes upload() take the "too large" branch, which marks the
-  # file done without transferring it. On-demand full-segment uploads still
-  # work: that path passes UPLOAD_FULL_LOG_MAX_SIZE explicitly.
+  # Hermes: camera video is 99% of the cloud backlog and is not needed there.
+  # A 1-byte cap makes upload() take the too-large branch, which marks the file
+  # done without transferring it. On-demand full-segment uploads still pass
+  # UPLOAD_FULL_LOG_MAX_SIZE explicitly, so they are unaffected.
   "fcamera.hevc": 1,
   "dcamera.hevc": 1,
   "ecamera.hevc": 1,
@@ -502,25 +495,8 @@ def main(exit_event: threading.Event | None = None) -> None:
       continue
 
     try:
-      global _pool, _loop_n
-      _net_type = sm['deviceState'].networkType.raw
-      _metered = sm['deviceState'].networkMetered
-      if _pool is None:
-        _pool = concurrent.futures.ThreadPoolExecutor(max_workers=UPLOAD_WORKERS, thread_name_prefix="up")
-      _futs = [_pool.submit(uploader.step, _net_type, _metered) for _ in range(UPLOAD_WORKERS)]
-      _res = []
-      for _f in _futs:
-        try:
-          _res.append(_f.result(timeout=300))
-        except Exception:
-          _res.append(False)
-      if all(r is None for r in _res):
-        success = None
-      else:
-        success = any(bool(r) for r in _res)
-      _loop_n += 1
-      if _loop_n % _STAT_EVERY == 0:
-        uploader.update_queue_stats()
+      success = uploader.step(sm['deviceState'].networkType.raw, sm['deviceState'].networkMetered)
+      uploader.update_queue_stats()
     except Exception:
       cloudlog.exception("uploader step failed")
       success = False
